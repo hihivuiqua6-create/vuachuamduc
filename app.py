@@ -1,7 +1,8 @@
 """
 Zefoy Web API + Giao diện Web - FastAPI
-Logic 100% từ buff.py gốc (có captcha, cooldown, submit form...)
-FIX: Bỏ Jinja2Templates, thêm exception handler
+- Logic buff: 100% từ buff.py gốc
+- Session + Captcha: từ source code cũ
+- Giao diện web: hacker style
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import uuid
 import urllib.parse
 import subprocess
 from typing import Any, Optional, Dict, List
+from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,7 +47,7 @@ app.add_middleware(
 )
 
 # ============================================================
-# GLOBAL EXCEPTION HANDLER - TRẢ JSON THAY VÌ HTML
+# EXCEPTION HANDLER
 # ============================================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -71,7 +73,7 @@ async def http_exception_handler(request: Request, exc: FastAPIHTTPException):
     )
 
 # ============================================================
-# LOGIC TỪ buff.py GỐC (GIỐNG 100%)
+# LOGIC TỪ buff.py GỐC (GIỮ NGUYÊN 100%)
 # ============================================================
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -180,8 +182,9 @@ def extract_cooldown_seconds(decoded_response: str) -> tuple:
 
     return 0, ""
 
+# ===== CAPTCHA TỪ SOURCE CŨ =====
 def get_captcha_image(session: requests.Session) -> tuple:
-    """GIỐNG HỆT buff.py get_captcha_image"""
+    """Lấy ảnh captcha - TỪ SOURCE CŨ"""
     t = str(int(time.time()))
     params = {'getcapthca': t}
     try:
@@ -224,9 +227,8 @@ def get_captcha_image(session: requests.Session) -> tuple:
         return None, None
 
 def solve_captcha(session: requests.Session, captcha_text: str) -> bool:
-    """GIỐNG HỆT buff.py solve_captcha - gửi captcha"""
+    """Gửi captcha - TỪ SOURCE CŨ"""
     try:
-        # Lấy captcha image và form data
         captcha_url, form_data = get_captcha_image(session)
         
         if not captcha_url:
@@ -252,8 +254,9 @@ def solve_captcha(session: requests.Session, captcha_text: str) -> bool:
         logger.error(f"Lỗi giải captcha: {e}")
         return False
 
+# ===== LẤY DỊCH VỤ - FIX LAYOUT MỚI =====
 def get_services(session: requests.Session) -> tuple:
-    """GIỐNG HỆT buff.py get_services - FIX cho layout mới"""
+    """Lấy danh sách dịch vụ - FIX cho layout mới của Zefoy"""
     try:
         r = session.get('https://zefoy.com/')
         html_content = decode_zefoy_response(r.text)
@@ -360,7 +363,7 @@ def get_services(session: requests.Session) -> tuple:
         return [], ""
 
 def get_service_form(html_content: str, menu_class: str) -> Optional[Dict]:
-    """GIỐNG HỆT buff.py get_service_form"""
+    """Lấy form cho dịch vụ - GIỐNG buff.py"""
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         
@@ -423,7 +426,7 @@ def extract_form_data(form) -> Optional[Dict]:
         return None
 
 # ============================================================
-# ZEFOY BOT CLASS (GIỐNG HỆT buff.py)
+# ZEFOY BOT CLASS (GIỮ NGUYÊN LOGIC buff.py)
 # ============================================================
 
 class ZefoyBot:
@@ -456,7 +459,7 @@ class ZefoyBot:
         return session
     
     def get_captcha(self) -> Optional[Dict]:
-        """Lấy ảnh captcha - GIỐNG buff.py"""
+        """Lấy ảnh captcha - TỪ SOURCE CŨ"""
         captcha_url, form_data = get_captcha_image(self.session)
         
         if not captcha_url:
@@ -481,7 +484,7 @@ class ZefoyBot:
             return None
     
     def submit_captcha(self, captcha_text: str) -> bool:
-        """Gửi captcha - GIỐNG buff.py"""
+        """Gửi captcha - TỪ SOURCE CŨ"""
         result = solve_captcha(self.session, captcha_text)
         if result:
             self.captcha_solved = True
@@ -676,7 +679,7 @@ class ZefoyBot:
         return results
 
 # ============================================================
-# SESSION STORE
+# SESSION STORE (TỪ SOURCE CŨ)
 # ============================================================
 
 SESSIONS: Dict[str, Dict] = {}
@@ -728,7 +731,7 @@ class BoostRequest(BaseModel):
     max_runs: int = 10
 
 # ============================================================
-# GIAO DIỆN WEB HTML (CÓ CAPTCHA)
+# GIAO DIỆN WEB HTML
 # ============================================================
 
 HTML_TEMPLATE = """
@@ -1371,7 +1374,6 @@ HTML_TEMPLATE = """
                 if (data.success) {
                     SESSION_ID = data.session_id;
                     
-                    // Kiểm tra có captcha không
                     if (data.captcha_required && data.captcha_b64) {
                         showCaptcha(data.captcha_b64);
                         showResult(resultBox, '📷 Cần nhập captcha để xác thực', 'warning');
@@ -1440,8 +1442,6 @@ HTML_TEMPLATE = """
                 } else {
                     showResult(resultBox, '❌ Captcha sai! Vui lòng thử lại.', 'error');
                     addLog('❌ Captcha sai', 'error');
-                    
-                    // Lấy captcha mới
                     refreshCaptcha();
                 }
             } catch (e) {
@@ -1627,7 +1627,6 @@ HTML_TEMPLATE = """
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    """Trang chủ - Giao diện Web"""
     return HTML_TEMPLATE
 
 @app.get("/api")
@@ -1655,9 +1654,8 @@ async def start_session(req: StartRequest):
     st = _new_session_state(req.cookie_string, req.user_agent)
     bot: ZefoyBot = st["bot"]
     
-    # Kiểm tra auth
+    # Kiểm tra auth - từ buff.py
     if bot.authenticate():
-        # Đã đăng nhập, lấy services
         services = bot.get_services_list()
         st["services"] = services
         SESSIONS[session_id] = st
@@ -1670,7 +1668,7 @@ async def start_session(req: StartRequest):
             ]
         }
     
-    # Chưa đăng nhập, cần captcha
+    # Chưa đăng nhập, cần captcha - từ source cũ
     captcha_data = bot.get_captcha()
     if captcha_data and not captcha_data.get('solved'):
         st["captcha_data"] = captcha_data
@@ -1683,7 +1681,6 @@ async def start_session(req: StartRequest):
             "message": "Cần nhập captcha để xác thực"
         }
     
-    # Không lấy được captcha
     raise HTTPException(500, "Không thể lấy captcha. Vui lòng thử lại sau.")
 
 @app.post("/api/captcha")
@@ -1694,9 +1691,7 @@ async def submit_captcha(req: CaptchaRequest):
     if not req.captcha_text:
         raise HTTPException(400, "captcha_text không được để trống")
     
-    # Gửi captcha
     if bot.submit_captcha(req.captcha_text):
-        # Captcha đúng, lấy services
         services = bot.get_services_list()
         st["services"] = services
         return {
@@ -1707,7 +1702,6 @@ async def submit_captcha(req: CaptchaRequest):
             ]
         }
     else:
-        # Captcha sai, lấy captcha mới
         captcha_data = bot.get_captcha()
         if captcha_data and not captcha_data.get('solved'):
             st["captcha_data"] = captcha_data
@@ -1757,7 +1751,7 @@ async def boost(req: BoostRequest):
     st = _get_session(req.session_id)
     bot: ZefoyBot = st["bot"]
     
-    # Kiểm tra auth
+    # Kiểm tra auth trước khi boost - từ buff.py
     if not bot.authenticate():
         raise HTTPException(401, "Session đã hết hạn. Vui lòng tạo session mới.")
     
