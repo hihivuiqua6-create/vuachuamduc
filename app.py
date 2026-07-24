@@ -1221,297 +1221,274 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <script>
-        (function() {
-            const canvas = document.getElementById('matrix');
-            const ctx = canvas.getContext('2d');
+ <script>
+    (function() {
+        const canvas = document.getElementById('matrix');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        const fontSize = 14;
+        const columns = Math.floor(canvas.width / fontSize);
+        const drops = Array(columns).fill(1);
+        
+        function draw() {
+            ctx.fillStyle = 'rgba(0,0,0,0.05)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#00ff50';
+            ctx.font = fontSize + 'px monospace';
+            for (let i = 0; i < drops.length; i++) {
+                ctx.fillText(chars[Math.floor(Math.random() * chars.length)], i * fontSize, drops[i] * fontSize);
+                if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) drops[i] = 0;
+                drops[i]++;
+            }
+        }
+        setInterval(draw, 60);
+        window.addEventListener('resize', () => {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
-            const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-            const fontSize = 14;
-            const columns = Math.floor(canvas.width / fontSize);
-            const drops = Array(columns).fill(1);
-            
-            function draw() {
-                ctx.fillStyle = 'rgba(0,0,0,0.05)';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                ctx.fillStyle = '#00ff50';
-                ctx.font = fontSize + 'px monospace';
-                for (let i = 0; i < drops.length; i++) {
-                    ctx.fillText(chars[Math.floor(Math.random() * chars.length)], i * fontSize, drops[i] * fontSize);
-                    if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) drops[i] = 0;
-                    drops[i]++;
-                }
-            }
-            setInterval(draw, 60);
-            window.addEventListener('resize', () => {
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
-            });
-        })();
+        });
+    })();
 
-        let SESSION_ID = null;
-        let isRunning = false;
-        let totalRuns = 0;
+    let SESSION_ID = null;
+    let isRunning = false;
+    let totalRuns = 0;
 
-        const $ = id => document.getElementById(id);
-        const videoUrl = $('videoUrl');
-        const serviceSelect = $('serviceSelect');
-        const maxRuns = $('maxRuns');
-        const authStatus = $('authStatus');
-        const serviceCount = $('serviceCount');
-        const runCount = $('runCount');
-        const logsContainer = $('logsContainer');
-        const resultBox = $('resultBox');
-        const boostResult = $('boostResult');
-        const boostProgress = $('boostProgress');
-        const progressFill = $('progressFill');
-        const progressText = $('progressText');
-        const servicesContainer = $('servicesContainer');
-        const servicesCard = $('servicesCard');
-        const boostCard = $('boostCard');
+    const $ = id => document.getElementById(id);
+    const videoUrl = $('videoUrl');
+    const serviceSelect = $('serviceSelect');
+    const maxRuns = $('maxRuns');
+    const authStatus = $('authStatus');
+    const serviceCount = $('serviceCount');
+    const runCount = $('runCount');
+    const logsContainer = $('logsContainer');
+    const resultBox = $('resultBox');
+    const boostResult = $('boostResult');
+    const boostProgress = $('boostProgress');
+    const progressFill = $('progressFill');
+    const progressText = $('progressText');
+    const servicesContainer = $('servicesContainer');
+    const servicesCard = $('servicesCard');
+    const boostCard = $('boostCard');
 
-        function addLog(message, type = 'system') {
-            const time = new Date().toLocaleTimeString();
-            const entry = document.createElement('div');
-            entry.className = 'log-entry ' + type;
-            entry.innerHTML = '<span class="time">[' + time + ']</span> ' + message;
-            logsContainer.appendChild(entry);
-            logsContainer.scrollTop = logsContainer.scrollHeight;
+    function addLog(message, type = 'system') {
+        const time = new Date().toLocaleTimeString();
+        const entry = document.createElement('div');
+        entry.className = 'log-entry ' + type;
+        entry.innerHTML = '<span class="time">[' + time + ']</span> ' + message;
+        logsContainer.appendChild(entry);
+        logsContainer.scrollTop = logsContainer.scrollHeight;
+    }
+
+    function showResult(el, msg, type = 'info') {
+        el.textContent = msg;
+        el.className = 'result-box show ' + type;
+        el.style.display = 'block';
+    }
+    function hideResult(el) {
+        el.className = 'result-box';
+        el.textContent = '';
+        el.style.display = 'none';
+    }
+
+    function updateStatus(authenticated, services = 0) {
+        if (authenticated) {
+            authStatus.textContent = '🟢 Đã kết nối';
+            authStatus.className = 'value online';
+        } else {
+            authStatus.textContent = '🔴 Chưa kết nối';
+            authStatus.className = 'value offline';
         }
+        serviceCount.textContent = services;
+    }
 
-        function showResult(el, msg, type = 'info') {
-            el.textContent = msg;
-            el.className = 'result-box show ' + type;
-            el.style.display = 'block';
+    function renderServices(services) {
+        if (!services || services.length === 0) {
+            servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px;">Không có dịch vụ nào</div>';
+            return;
         }
-        function hideResult(el) {
-            el.className = 'result-box';
-            el.textContent = '';
-            el.style.display = 'none';
-        }
-
-        function updateStatus(authenticated, services = 0) {
-            if (authenticated) {
-                authStatus.textContent = '🟢 Đã kết nối';
-                authStatus.className = 'value online';
-            } else {
-                authStatus.textContent = '🔴 Chưa kết nối';
-                authStatus.className = 'value offline';
-            }
-            serviceCount.textContent = services;
-        }
-
-        function renderServices(services) {
-            if (!services || services.length === 0) {
-                servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px;">Không có dịch vụ nào</div>';
-                return;
-            }
-            
-            serviceSelect.innerHTML = '<option value="">-- Chọn dịch vụ --</option>';
-            let html = '<div class="services-grid">';
-            services.forEach(s => {
-                const statusClass = s.active ? 'online' : 'offline';
-                const statusText = s.active ? '🟢 ONLINE' : '🔴 OFFLINE';
-                html += '<div class="service-item">';
-                html += '<div class="name">' + s.name + '</div>';
-                html += '<div class="status ' + statusClass + '">' + statusText + ' (' + s.status + ')</div>';
-                html += '</div>';
-                
-                if (s.active) {
-                    const opt = document.createElement('option');
-                    opt.value = s.name;
-                    opt.textContent = '🟢 ' + s.name;
-                    serviceSelect.appendChild(opt);
-                }
-            });
+        
+        serviceSelect.innerHTML = '<option value="">-- Chọn dịch vụ --</option>';
+        let html = '<div class="services-grid">';
+        services.forEach(s => {
+            const statusClass = s.active ? 'online' : 'offline';
+            const statusText = s.active ? '🟢 ONLINE' : '🔴 OFFLINE';
+            html += '<div class="service-item">';
+            html += '<div class="name">' + s.name + '</div>';
+            html += '<div class="status ' + statusClass + '">' + statusText + ' (' + s.status + ')</div>';
             html += '</div>';
-            servicesContainer.innerHTML = html;
             
-            servicesCard.style.display = 'block';
-            boostCard.style.display = 'block';
-        }
+            if (s.active) {
+                const opt = document.createElement('option');
+                opt.value = s.name;
+                opt.textContent = '🟢 ' + s.name;
+                serviceSelect.appendChild(opt);
+            }
+        });
+        html += '</div>';
+        servicesContainer.innerHTML = html;
+        
+        servicesCard.style.display = 'block';
+        boostCard.style.display = 'block';
+    }
 
-        async function startSession() {
-            showResult(resultBox, '⏳ Đang khởi tạo session + tự động giải captcha...', 'info');
-            addLog('⏳ Đang khởi tạo session...', 'system');
+    // ===== HÀM GỌI API CHUẨN =====
+    async function callAPI(endpoint, data = {}) {
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
             
+            const text = await response.text();
+            
+            // Kiểm tra response có phải JSON không
+            let result;
             try {
-                const res = await fetch('/api/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({})
-                });
-                
-                const text = await res.text();
-                let data;
-                try {
-                    data = JSON.parse(text);
-                } catch (e) {
-                    showResult(resultBox, '❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
-                    addLog('❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
-                    return;
-                }
-                
-                if (data.success) {
-                    SESSION_ID = data.session_id;
-                    updateStatus(true, data.services ? data.services.length : 0);
-                    showResult(resultBox, '✅ Session khởi tạo thành công! Captcha tự động giải.', 'success');
-                    addLog('✅ Session ID: ' + SESSION_ID.slice(0, 16) + '...', 'success');
-                    
-                    if (data.services && data.services.length > 0) {
-                        renderServices(data.services);
-                        addLog('📋 Đã tải ' + data.services.length + ' dịch vụ', 'system');
-                    }
-                } else {
-                    showResult(resultBox, '❌ ' + (data.message || data.detail || 'Lỗi không xác định'), 'error');
-                    addLog('❌ Lỗi: ' + (data.message || data.detail || 'Không xác định'), 'error');
-                }
+                result = JSON.parse(text);
             } catch (e) {
-                showResult(resultBox, '❌ Lỗi kết nối: ' + e.message, 'error');
-                addLog('❌ Lỗi kết nối: ' + e.message, 'error');
+                // Nếu không phải JSON, trả về lỗi
+                return {
+                    success: false,
+                    message: 'Server trả về lỗi: ' + text.substring(0, 200),
+                    raw: text
+                };
             }
+            
+            return result;
+        } catch (e) {
+            return {
+                success: false,
+                message: 'Lỗi kết nối: ' + e.message
+            };
         }
+    }
 
-        async function loadServices() {
-            if (!SESSION_ID) {
-                showResult(resultBox, '⚠️ Vui lòng khởi tạo session trước!', 'error');
-                return;
-            }
+    async function startSession() {
+        showResult(resultBox, '⏳ Đang khởi tạo session + tự động giải captcha...', 'info');
+        addLog('⏳ Đang khởi tạo session...', 'system');
+        
+        const result = await callAPI('/api/start', {});
+        
+        if (result.success) {
+            SESSION_ID = result.session_id;
+            updateStatus(true, result.services ? result.services.length : 0);
+            showResult(resultBox, '✅ Session khởi tạo thành công! Captcha tự động giải.', 'success');
+            addLog('✅ Session ID: ' + SESSION_ID.slice(0, 16) + '...', 'success');
             
-            showResult(resultBox, '⏳ Đang tải dịch vụ...', 'info');
-            addLog('⏳ Đang tải dịch vụ...', 'system');
-            
-            try {
-                const res = await fetch('/api/services', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: SESSION_ID })
-                });
-                
-                const text = await res.text();
-                let data;
-                try {
-                    data = JSON.parse(text);
-                } catch (e) {
-                    showResult(resultBox, '❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
-                    return;
-                }
-                
-                if (data.success) {
-                    renderServices(data.services);
-                    updateStatus(true, data.services.length);
-                    showResult(resultBox, '✅ Đã tải ' + data.services.length + ' dịch vụ', 'success');
-                    addLog('✅ Đã tải ' + data.services.length + ' dịch vụ', 'success');
-                } else {
-                    showResult(resultBox, '❌ ' + (data.message || data.detail || 'Lỗi không xác định'), 'error');
-                    addLog('❌ Lỗi: ' + (data.message || data.detail || 'Không xác định'), 'error');
-                }
-            } catch (e) {
-                showResult(resultBox, '❌ Lỗi kết nối: ' + e.message, 'error');
-                addLog('❌ Lỗi kết nối: ' + e.message, 'error');
+            if (result.services && result.services.length > 0) {
+                renderServices(result.services);
+                addLog('📋 Đã tải ' + result.services.length + ' dịch vụ', 'system');
             }
+        } else {
+            showResult(resultBox, '❌ ' + (result.message || 'Lỗi không xác định'), 'error');
+            addLog('❌ Lỗi: ' + (result.message || 'Không xác định'), 'error');
         }
+    }
 
-        async function startBoost() {
-            if (isRunning) {
-                addLog('⚠️ Bot đang chạy!', 'warning');
-                return;
+    async function loadServices() {
+        if (!SESSION_ID) {
+            showResult(resultBox, '⚠️ Vui lòng khởi tạo session trước!', 'error');
+            return;
+        }
+        
+        showResult(resultBox, '⏳ Đang tải dịch vụ...', 'info');
+        addLog('⏳ Đang tải dịch vụ...', 'system');
+        
+        const result = await callAPI('/api/services', { session_id: SESSION_ID });
+        
+        if (result.success) {
+            renderServices(result.services);
+            updateStatus(true, result.services.length);
+            showResult(resultBox, '✅ Đã tải ' + result.services.length + ' dịch vụ', 'success');
+            addLog('✅ Đã tải ' + result.services.length + ' dịch vụ', 'success');
+        } else {
+            showResult(resultBox, '❌ ' + (result.message || 'Lỗi không xác định'), 'error');
+            addLog('❌ Lỗi: ' + (result.message || 'Không xác định'), 'error');
+        }
+    }
+
+    async function startBoost() {
+        if (isRunning) {
+            addLog('⚠️ Bot đang chạy!', 'warning');
+            return;
+        }
+        
+        if (!SESSION_ID) {
+            showResult(boostResult, '⚠️ Vui lòng khởi tạo session trước!', 'error');
+            return;
+        }
+        
+        const url = videoUrl.value.trim();
+        if (!url) {
+            showResult(boostResult, '⚠️ Nhập link TikTok!', 'error');
+            return;
+        }
+        
+        const service = serviceSelect.value;
+        if (!service) {
+            showResult(boostResult, '⚠️ Chọn dịch vụ!', 'error');
+            return;
+        }
+        
+        const runs = parseInt(maxRuns.value) || 10;
+        
+        isRunning = true;
+        boostProgress.classList.add('show');
+        progressFill.style.width = '0%';
+        progressText.textContent = 'Đang bắt đầu...';
+        hideResult(boostResult);
+        addLog('🚀 Bắt đầu boost: ' + service + ' - ' + runs + ' lượt', 'system');
+        
+        const result = await callAPI('/api/boost', {
+            session_id: SESSION_ID,
+            video_url: url,
+            service: service,
+            max_runs: runs
+        });
+        
+        progressFill.style.width = '100%';
+        progressText.textContent = 'Hoàn tất!';
+        
+        if (result.success) {
+            totalRuns += result.runs || 0;
+            runCount.textContent = totalRuns;
+            
+            let msg = '✅ ' + (result.message || 'Boost thành công!');
+            if (result.runs) msg += ' (' + result.runs + ' lượt)';
+            if (result.errors && result.errors.length) {
+                msg += '\\n⚠️ Lỗi: ' + result.errors.join('\\n');
             }
-            
-            if (!SESSION_ID) {
-                showResult(boostResult, '⚠️ Vui lòng khởi tạo session trước!', 'error');
-                return;
+            showResult(boostResult, msg, 'success');
+            addLog('✅ Boost thành công: ' + (result.runs || 0) + ' lượt', 'success');
+        } else {
+            let msg = '❌ ' + (result.message || 'Lỗi không xác định');
+            if (result.errors && result.errors.length) {
+                msg += '\\n⚠️ ' + result.errors.join('\\n');
             }
-            
-            const url = videoUrl.value.trim();
-            if (!url) {
-                showResult(boostResult, '⚠️ Nhập link TikTok!', 'error');
-                return;
-            }
-            
-            const service = serviceSelect.value;
-            if (!service) {
-                showResult(boostResult, '⚠️ Chọn dịch vụ!', 'error');
-                return;
-            }
-            
-            const runs = parseInt(maxRuns.value) || 10;
-            
-            isRunning = true;
-            boostProgress.classList.add('show');
+            showResult(boostResult, msg, 'error');
+            addLog('❌ Boost thất bại: ' + (result.message || ''), 'error');
+        }
+        
+        setTimeout(() => {
+            boostProgress.classList.remove('show');
             progressFill.style.width = '0%';
-            progressText.textContent = 'Đang bắt đầu...';
-            hideResult(boostResult);
-            addLog('🚀 Bắt đầu boost: ' + service + ' - ' + runs + ' lượt', 'system');
-            
-            try {
-                const res = await fetch('/api/boost', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        session_id: SESSION_ID,
-                        video_url: url,
-                        service: service,
-                        max_runs: runs
-                    })
-                });
-                
-                const text = await res.text();
-                let data;
-                try {
-                    data = JSON.parse(text);
-                } catch (e) {
-                    showResult(boostResult, '❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
-                    addLog('❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
-                    return;
-                }
-                
-                progressFill.style.width = '100%';
-                progressText.textContent = 'Hoàn tất!';
-                
-                if (data.success) {
-                    totalRuns += data.runs || 0;
-                    runCount.textContent = totalRuns;
-                    
-                    let msg = '✅ ' + (data.message || 'Boost thành công!');
-                    if (data.runs) msg += ' (' + data.runs + ' lượt)';
-                    if (data.errors && data.errors.length) {
-                        msg += '\\n⚠️ Lỗi: ' + data.errors.join('\\n');
-                    }
-                    showResult(boostResult, msg, 'success');
-                    addLog('✅ Boost thành công: ' + (data.runs || 0) + ' lượt', 'success');
-                } else {
-                    let msg = '❌ ' + (data.message || 'Lỗi không xác định');
-                    if (data.errors && data.errors.length) {
-                        msg += '\\n⚠️ ' + data.errors.join('\\n');
-                    }
-                    showResult(boostResult, msg, 'error');
-                    addLog('❌ Boost thất bại: ' + (data.message || ''), 'error');
-                }
-            } catch (e) {
-                showResult(boostResult, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi boost: ' + e.message, 'error');
-            }
-            
-            setTimeout(() => {
-                boostProgress.classList.remove('show');
-                progressFill.style.width = '0%';
-            }, 3000);
-            
-            isRunning = false;
-        }
+        }, 3000);
+        
+        isRunning = false;
+    }
 
-        function stopBoost() {
-            if (!isRunning) {
-                addLog('⚠️ Bot không đang chạy', 'warning');
-                return;
-            }
-            isRunning = false;
-            addLog('⏹️ Đã dừng boost', 'warning');
-            showResult(boostResult, '⏹️ Đã dừng boost', 'warning');
+    function stopBoost() {
+        if (!isRunning) {
+            addLog('⚠️ Bot không đang chạy', 'warning');
+            return;
         }
-    </script>
+        isRunning = false;
+        addLog('⏹️ Đã dừng boost', 'warning');
+        showResult(boostResult, '⏹️ Đã dừng boost', 'warning');
+    }
+</script>
 </body>
 </html>
 """
