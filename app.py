@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from app.buff_core import (
+from core.buff_core import  (
     do_buff_once,
     get_captcha,
     get_service_form,
@@ -26,7 +26,7 @@ from app.buff_core import (
     new_session,
     submit_captcha,
 )
-from app.ocr_solver import solve_captcha_image
+from core.ocr_solver import solve_captcha_image
 
 app = FastAPI(title="TIENDEV Buff API", version="1.0.0")
 app.add_middleware(
