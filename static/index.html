@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>TienBuff — TikTok Buffing</title>
+<meta name="description" content="TienBuff — panel buff TikTok qua Zefoy, giao diện hiện đại." />
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  html,body{font-family:'Inter',ui-sans-serif,system-ui,sans-serif}
+  body{
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(139,92,246,.25), transparent 60%),
+      radial-gradient(900px 500px at 110% 10%, rgba(236,72,153,.18), transparent 60%),
+      radial-gradient(800px 500px at 50% 120%, rgba(56,189,248,.20), transparent 60%),
+      #05060a;
+    min-height:100vh;
+  }
+  .glass{background:rgba(20,22,32,.55);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+    border:1px solid rgba(255,255,255,.08);box-shadow:0 10px 40px rgba(0,0,0,.35)}
+  .glow{box-shadow:0 0 40px rgba(139,92,246,.35),0 0 80px rgba(236,72,153,.2)}
+  .btn-primary{
+    background:linear-gradient(135deg,#8b5cf6 0%,#ec4899 100%);
+    color:white;transition:transform .15s ease, filter .15s ease;
+  }
+  .btn-primary:hover{filter:brightness(1.1);transform:translateY(-1px)}
+  .btn-primary:active{transform:translateY(0)}
+  .btn-ghost{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);color:#e5e7eb}
+  .btn-ghost:hover{background:rgba(255,255,255,.08)}
+  .field{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.09);color:#f3f4f6}
+  .field:focus{outline:none;border-color:#8b5cf6;box-shadow:0 0 0 3px rgba(139,92,246,.25)}
+  .tab.active{background:linear-gradient(135deg,rgba(139,92,246,.25),rgba(236,72,153,.2));color:#fff;border-color:rgba(139,92,246,.5)}
+  .fade-in{animation:fi .35s ease}
+  @keyframes fi{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .chip{padding:2px 10px;border-radius:9999px;font-size:11px;font-weight:600;letter-spacing:.02em}
+  .scroll-thin::-webkit-scrollbar{width:8px;height:8px}
+  .scroll-thin::-webkit-scrollbar-thumb{background:#3f3f46;border-radius:8px}
+  .spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;animation:sp 1s linear infinite;display:inline-block;vertical-align:-3px}
+  @keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body class="text-slate-100">
+
+<!-- Toast -->
+<div id="toast" class="fixed top-5 right-5 z-50 space-y-2"></div>
+
+<!-- AUTH -->
+<section id="auth" class="min-h-screen flex items-center justify-center p-4">
+  <div class="glass glow rounded-3xl w-full max-w-md p-8 fade-in">
+    <div class="flex items-center gap-3 mb-6">
+      <div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-violet-500 to-pink-500 flex items-center justify-center font-black text-white text-xl">T</div>
+      <div>
+        <div class="text-xl font-extrabold tracking-tight">TienBuff</div>
+        <div class="text-xs text-slate-400">TikTok Zefoy Panel</div>
+      </div>
+    </div>
+
+    <div class="flex bg-white/5 rounded-xl p-1 mb-6" id="authTabs">
+      <button data-t="login" class="tab active flex-1 py-2 rounded-lg text-sm font-semibold border border-transparent">Đăng nhập</button>
+      <button data-t="register" class="tab flex-1 py-2 rounded-lg text-sm font-semibold border border-transparent">Đăng ký</button>
+    </div>
+
+    <form id="loginForm" class="space-y-3">
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Tên đăng nhập</label>
+        <input name="username" required class="field w-full rounded-xl px-4 py-3 text-sm" placeholder="admin" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Mật khẩu</label>
+        <input name="password" type="password" required class="field w-full rounded-xl px-4 py-3 text-sm" placeholder="••••••••" />
+      </div>
+      <button class="btn-primary w-full rounded-xl py-3 font-semibold text-sm mt-2">Đăng nhập</button>
+    </form>
+
+    <form id="registerForm" class="space-y-3 hidden">
+      <div class="text-xs bg-violet-500/10 border border-violet-500/30 rounded-lg px-3 py-2 text-violet-200">
+        Người đăng ký <b>đầu tiên</b> sẽ trở thành <b>admin</b>. Sau đó đăng ký sẽ đóng.
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Tên đăng nhập</label>
+        <input name="username" required minlength="3" class="field w-full rounded-xl px-4 py-3 text-sm" />
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 mb-1 block">Mật khẩu (tối thiểu 6 ký tự)</label>
+        <input name="password" type="password" required minlength="6" class="field w-full rounded-xl px-4 py-3 text-sm" />
+      </div>
+      <button class="btn-primary w-full rounded-xl py-3 font-semibold text-sm mt-2">Tạo tài khoản admin</button>
+    </form>
+
+    <div id="regClosed" class="hidden mt-4 text-center text-xs text-slate-400">
+      Đăng ký đã đóng — chỉ có thể đăng nhập.
+    </div>
+
+    <div class="mt-6 text-[11px] text-slate-500 text-center">
+      API: <span id="apiHint" class="text-slate-300"></span>
+    </div>
+  </div>
+</section>
+
+<!-- APP -->
+<section id="app" class="hidden min-h-screen">
+  <header class="sticky top-0 z-30 glass border-b border-white/5">
+    <div class="max-w-6xl mx-auto px-5 py-3 flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-pink-500 flex items-center justify-center font-black">T</div>
+      <div class="font-extrabold tracking-tight">TienBuff</div>
+      <nav class="ml-6 flex gap-1" id="navTabs">
+        <button data-p="run" class="tab active px-3 py-1.5 rounded-lg text-sm font-semibold border border-transparent">Buff</button>
+        <button data-p="admin" class="tab hidden px-3 py-1.5 rounded-lg text-sm font-semibold border border-transparent">Admin</button>
+        <button data-p="history" class="tab hidden px-3 py-1.5 rounded-lg text-sm font-semibold border border-transparent">Lịch sử</button>
+      </nav>
+      <div class="ml-auto flex items-center gap-3 text-sm">
+        <span id="whoami" class="text-slate-300"></span>
+        <button id="logout" class="btn-ghost rounded-lg px-3 py-1.5 text-xs">Đăng xuất</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto p-5">
+    <!-- Buff -->
+    <div data-page="run" class="fade-in space-y-4">
+      <div class="glass rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <div class="font-bold text-lg">Chọn dịch vụ</div>
+            <div class="text-xs text-slate-400" id="runCookieMeta">—</div>
+          </div>
+          <button id="reloadServices" class="btn-ghost rounded-lg px-3 py-1.5 text-xs">↻ Tải lại</button>
+        </div>
+        <div id="services" class="grid grid-cols-2 md:grid-cols-4 gap-2"></div>
+      </div>
+
+      <div class="glass rounded-2xl p-5 space-y-3">
+        <div class="font-bold text-lg">Chạy buff</div>
+        <div>
+          <label class="text-xs text-slate-400 mb-1 block">Link video TikTok</label>
+          <input id="videoUrl" class="field w-full rounded-xl px-4 py-3 text-sm" placeholder="https://vt.tiktok.com/..." />
+        </div>
+        <div class="flex flex-wrap gap-2 items-center">
+          <div class="text-xs text-slate-400">Dịch vụ đã chọn:</div>
+          <div id="selectedService" class="chip bg-white/5 text-slate-200">chưa chọn</div>
+          <button id="runBtn" class="ml-auto btn-primary rounded-xl px-5 py-2.5 text-sm font-semibold">Chạy</button>
+        </div>
+        <div id="runResult" class="hidden rounded-xl p-3 text-sm"></div>
+      </div>
+    </div>
+
+    <!-- Admin -->
+    <div data-page="admin" class="hidden fade-in space-y-4">
+      <div class="glass rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div class="font-bold text-lg">Thêm cookie + User-Agent</div>
+          <div class="text-xs text-slate-400">Cookie Zefoy đã pass captcha</div>
+        </div>
+        <form id="cookieForm" class="grid md:grid-cols-2 gap-3">
+          <input name="label" class="field rounded-xl px-4 py-3 text-sm md:col-span-2" placeholder="Nhãn cookie (vd: Acc1)" />
+          <textarea name="user_agent" required class="field rounded-xl px-4 py-3 text-sm md:col-span-2 min-h-[70px]" placeholder="User-Agent (vd: Mozilla/5.0 (Windows NT 10.0; Win64; x64)...)"></textarea>
+          <textarea name="cookie_string" required class="field rounded-xl px-4 py-3 text-sm md:col-span-2 min-h-[110px] font-mono" placeholder="Cookie string (name1=value1; name2=value2; ...)"></textarea>
+          <button class="btn-primary rounded-xl px-5 py-3 text-sm font-semibold md:col-span-2">+ Thêm cookie</button>
+        </form>
+      </div>
+
+      <div class="glass rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div class="font-bold text-lg">Pool cookie</div>
+          <button id="reloadCookies" class="btn-ghost rounded-lg px-3 py-1.5 text-xs">↻ Tải lại</button>
+        </div>
+        <div id="cookiesList" class="space-y-2"></div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div data-page="history" class="hidden fade-in">
+      <div class="glass rounded-2xl p-5">
+        <div class="flex items-center justify-between mb-3">
+          <div class="font-bold text-lg">Lịch sử chạy</div>
+          <div id="statsBox" class="text-xs text-slate-400"></div>
+        </div>
+        <div id="historyList" class="space-y-2 max-h-[70vh] overflow-auto scroll-thin"></div>
+      </div>
+    </div>
+  </main>
+</section>
+
+<script>
+const API = location.origin + '/api';
+document.getElementById('apiHint').textContent = API;
+
+const state = { token: localStorage.getItem('tb_token') || '', role: localStorage.getItem('tb_role') || '', user: localStorage.getItem('tb_user') || '', service: null };
+
+function toast(msg, kind='info'){
+  const el = document.createElement('div');
+  const c = kind==='error'?'bg-rose-500/90':kind==='ok'?'bg-emerald-500/90':'bg-slate-800/95';
+  el.className = `${c} text-white text-sm px-4 py-2 rounded-xl shadow-2xl backdrop-blur border border-white/10 fade-in`;
+  el.textContent = msg;
+  document.getElementById('toast').appendChild(el);
+  setTimeout(()=>el.remove(), 3500);
+}
+
+async function api(path, opts={}){
+  const headers = { 'Content-Type':'application/json', ...(opts.headers||{}) };
+  if (state.token) headers['Authorization'] = 'Bearer '+state.token;
+  const res = await fetch(API+path, { ...opts, headers });
+  const txt = await res.text();
+  let data; try{ data = txt?JSON.parse(txt):{} }catch{ data={raw:txt} }
+  if (!res.ok) throw new Error(data.detail || data.message || res.statusText);
+  return data;
+}
+
+// ── auth ui ──
+const tabs = document.querySelectorAll('#authTabs .tab');
+tabs.forEach(b=>b.onclick=()=>{
+  tabs.forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  const t = b.dataset.t;
+  loginForm.classList.toggle('hidden', t!=='login');
+  registerForm.classList.toggle('hidden', t!=='register');
+});
+
+async function refreshRegState(){
+  try{
+    const s = await api('/status');
+    if (!s.registration_open){
+      registerForm.classList.add('hidden');
+      regClosed.classList.remove('hidden');
+      // Force login tab
+      tabs.forEach(x=>x.classList.toggle('active', x.dataset.t==='login'));
+      loginForm.classList.remove('hidden');
+    } else {
+      regClosed.classList.add('hidden');
+    }
+  }catch{}
+}
+
+loginForm.onsubmit = async e=>{
+  e.preventDefault();
+  const f = new FormData(loginForm);
+  try{
+    const d = await api('/login', { method:'POST', body: JSON.stringify({ username:f.get('username'), password:f.get('password') }) });
+    setSession(d); toast('Đăng nhập thành công', 'ok');
+  }catch(err){ toast(err.message,'error') }
+};
+registerForm.onsubmit = async e=>{
+  e.preventDefault();
+  const f = new FormData(registerForm);
+  try{
+    const d = await api('/register', { method:'POST', body: JSON.stringify({ username:f.get('username'), password:f.get('password') }) });
+    setSession(d); toast('Tạo admin thành công 🎉','ok');
+  }catch(err){ toast(err.message,'error') }
+};
+
+function setSession(d){
+  state.token = d.token; state.role = d.role; state.user = d.username;
+  localStorage.setItem('tb_token', d.token);
+  localStorage.setItem('tb_role', d.role);
+  localStorage.setItem('tb_user', d.username);
+  enterApp();
+}
+
+document.getElementById('logout').onclick = ()=>{
+  state.token=state.role=state.user='';
+  localStorage.removeItem('tb_token');
+  localStorage.removeItem('tb_role');
+  localStorage.removeItem('tb_user');
+  location.reload();
+};
+
+// ── app ui ──
+const navTabs = document.querySelectorAll('#navTabs .tab');
+navTabs.forEach(b=>b.onclick=()=>switchPage(b.dataset.p));
+function switchPage(p){
+  navTabs.forEach(x=>x.classList.toggle('active', x.dataset.p===p));
+  document.querySelectorAll('[data-page]').forEach(el=>el.classList.toggle('hidden', el.dataset.page!==p));
+  if (p==='run') loadServices();
+  if (p==='admin') loadCookies();
+  if (p==='history') loadHistory();
+}
+
+async function enterApp(){
+  document.getElementById('auth').classList.add('hidden');
+  document.getElementById('app').classList.remove('hidden');
+  document.getElementById('whoami').innerHTML = `<span class="chip ${state.role==='admin'?'bg-gradient-to-r from-violet-500 to-pink-500':'bg-white/10'} text-white">${state.role}</span> <b>${state.user}</b>`;
+  navTabs.forEach(b=>{
+    if (b.dataset.p==='admin' || b.dataset.p==='history') b.classList.toggle('hidden', state.role!=='admin');
+  });
+  switchPage('run');
+}
+
+// services
+async function loadServices(){
+  const box = document.getElementById('services');
+  box.innerHTML = '<div class="col-span-full text-sm text-slate-400"><span class="spin"></span> Đang tải dịch vụ...</div>';
+  try{
+    const d = await api('/services');
+    document.getElementById('runCookieMeta').textContent = 'Cookie đang dùng: '+d.cookie_label;
+    box.innerHTML = '';
+    d.services.forEach(s=>{
+      const btn = document.createElement('button');
+      btn.className = `text-left rounded-xl p-3 border transition ${s.active?'border-white/10 hover:border-violet-500/60 bg-white/5':'border-white/5 bg-white/5 opacity-60 cursor-not-allowed'}`;
+      btn.innerHTML = `<div class="font-semibold text-sm">${s.name}</div>
+        <div class="mt-1 chip ${s.active?'bg-emerald-500/20 text-emerald-300':'bg-rose-500/20 text-rose-300'}">${s.status||(s.active?'sẵn sàng':'bảo trì')}</div>`;
+      btn.disabled = !s.active;
+      btn.onclick = ()=>{
+        state.service = s.name;
+        document.getElementById('selectedService').textContent = s.name;
+        document.getElementById('selectedService').className = 'chip bg-gradient-to-r from-violet-500 to-pink-500 text-white';
+        [...box.children].forEach(c=>c.classList.remove('ring-2','ring-violet-500'));
+        btn.classList.add('ring-2','ring-violet-500');
+      };
+      box.appendChild(btn);
+    });
+  }catch(err){
+    box.innerHTML = `<div class="col-span-full text-sm text-rose-300">${err.message}</div>`;
+  }
+}
+document.getElementById('reloadServices').onclick = loadServices;
+
+document.getElementById('runBtn').onclick = async ()=>{
+  const url = document.getElementById('videoUrl').value.trim();
+  if (!state.service) return toast('Chọn dịch vụ trước','error');
+  if (!url) return toast('Nhập link video','error');
+  const btn = document.getElementById('runBtn');
+  btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Đang chạy';
+  try{
+    const d = await api('/run', { method:'POST', body: JSON.stringify({ service: state.service, video_url: url }) });
+    const box = document.getElementById('runResult');
+    box.className = 'rounded-xl p-3 text-sm '+(d.ok?'bg-emerald-500/10 border border-emerald-500/30 text-emerald-200':'bg-rose-500/10 border border-rose-500/30 text-rose-200');
+    box.innerHTML = `<b>${d.ok?'✓ Thành công':'✗ Thất bại'}</b> — ${d.message||''} ${d.cooldown?`<div class="mt-1 text-xs opacity-80">Cooldown: ${d.cooldown}s</div>`:''}`;
+    box.classList.remove('hidden');
+    toast(d.ok?'Đã gửi buff':'Không thành công', d.ok?'ok':'error');
+  }catch(err){ toast(err.message,'error') }
+  finally{ btn.disabled=false; btn.textContent='Chạy' }
+};
+
+// admin cookies
+document.getElementById('cookieForm').onsubmit = async e=>{
+  e.preventDefault();
+  const f = new FormData(e.target);
+  try{
+    await api('/admin/cookies', { method:'POST', body: JSON.stringify({
+      label: f.get('label')||'', cookie_string: f.get('cookie_string'), user_agent: f.get('user_agent'),
+    })});
+    e.target.reset(); toast('Đã thêm cookie','ok'); loadCookies();
+  }catch(err){ toast(err.message,'error') }
+};
+document.getElementById('reloadCookies').onclick = loadCookies;
+
+async function loadCookies(){
+  const box = document.getElementById('cookiesList');
+  box.innerHTML = '<div class="text-sm text-slate-400"><span class="spin"></span> Đang tải...</div>';
+  try{
+    const d = await api('/admin/cookies');
+    if (!d.cookies.length){ box.innerHTML = '<div class="text-sm text-slate-400">Chưa có cookie nào.</div>'; return; }
+    box.innerHTML = '';
+    d.cookies.forEach(c=>{
+      const row = document.createElement('div');
+      row.className = 'rounded-xl p-3 border border-white/8 bg-white/5';
+      row.innerHTML = `
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="font-semibold">${c.label}</span>
+              <span class="chip ${c.active?'bg-emerald-500/20 text-emerald-300':'bg-slate-500/20 text-slate-300'}">${c.active?'active':'tắt'}</span>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-1 font-mono break-all">${c.cookie_preview}</div>
+            <div class="text-[11px] text-slate-500 mt-1 break-all">UA: ${c.user_agent}</div>
+          </div>
+          <div class="flex gap-2">
+            <button data-tog="${c.id}" class="btn-ghost rounded-lg px-3 py-1.5 text-xs">${c.active?'Tắt':'Bật'}</button>
+            <button data-del="${c.id}" class="rounded-lg px-3 py-1.5 text-xs bg-rose-500/20 text-rose-300 border border-rose-500/30 hover:bg-rose-500/30">Xoá</button>
+          </div>
+        </div>`;
+      box.appendChild(row);
+    });
+    box.querySelectorAll('[data-tog]').forEach(b=>b.onclick=async()=>{ try{ await api('/admin/cookies/'+b.dataset.tog+'/toggle',{method:'POST'}); loadCookies() }catch(e){toast(e.message,'error')} });
+    box.querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{ if(!confirm('Xoá cookie này?'))return; try{ await api('/admin/cookies/'+b.dataset.del,{method:'DELETE'}); loadCookies() }catch(e){toast(e.message,'error')} });
+  }catch(err){ box.innerHTML = `<div class="text-sm text-rose-300">${err.message}</div>` }
+}
+
+async function loadHistory(){
+  const box = document.getElementById('historyList');
+  box.innerHTML = '<div class="text-sm text-slate-400"><span class="spin"></span> Đang tải...</div>';
+  try{
+    const d = await api('/admin/history');
+    document.getElementById('statsBox').textContent = `Tổng chạy: ${d.stats.total_runs||0} · Thành công: ${d.stats.total_success||0}`;
+    if (!d.history.length){ box.innerHTML='<div class="text-sm text-slate-400">Chưa có lịch sử.</div>'; return; }
+    box.innerHTML = '';
+    d.history.forEach(h=>{
+      const row = document.createElement('div');
+      row.className = 'rounded-xl p-3 border border-white/8 bg-white/5 text-sm';
+      const t = new Date((h.at||0)*1000).toLocaleString('vi-VN');
+      row.innerHTML = `<div class="flex justify-between gap-3 flex-wrap">
+        <div>
+          <span class="chip ${h.ok?'bg-emerald-500/20 text-emerald-300':'bg-rose-500/20 text-rose-300'}">${h.ok?'OK':'FAIL'}</span>
+          <b>${h.service}</b> · <span class="text-slate-400">${h.by}</span>
+          <div class="text-xs text-slate-400 mt-1 break-all">${h.url}</div>
+        </div>
+        <div class="text-xs text-slate-400 text-right">
+          <div>${t}</div>
+          <div>${h.cookie_label||''}</div>
+        </div>
+      </div>
+      <div class="text-xs text-slate-300 mt-1">${h.message||''}</div>`;
+      box.appendChild(row);
+    });
+  }catch(err){ box.innerHTML = `<div class="text-sm text-rose-300">${err.message}</div>` }
+}
+
+// boot
+if (state.token) enterApp(); else refreshRegState();
+</script>
+</body>
+</html>
