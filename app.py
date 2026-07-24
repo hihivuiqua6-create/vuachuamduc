@@ -1,8 +1,9 @@
 """
-Zefoy Web API - Merge buff.py + source cũ
-- Logic boost: từ buff.py
+Zefoy Web API - Merge buff.py + source cũ + OCR tự động
+- Logic boost: từ buff.py (giữ nguyên 100%)
 - Captcha + session: từ source cũ (không cần nhập cookie)
-- OCR tự động giải captcha
+- OCR tự động giải captcha (newocr.com)
+- Fix lỗi parse JSON
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ app.add_middleware(
 )
 
 # ============================================================
-# EXCEPTION HANDLER
+# EXCEPTION HANDLER - TRẢ JSON LUÔN
 # ============================================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -277,7 +278,6 @@ def ocr_captcha(image_bytes: bytes) -> str:
         # Lấy file_id
         file_id_match = re.search(r'name="u"\s+value="([a-f0-9]{32})"', html_content)
         if not file_id_match:
-            # Thử cách khác
             file_id_match = re.search(r'name="u"[^>]*value="([^"]+)"', html_content)
         if not file_id_match:
             return ""
@@ -302,7 +302,6 @@ def ocr_captcha(image_bytes: bytes) -> str:
         result_match = re.search(r'<textarea[^>]*id="ocr-result"[^>]*>([\s\S]*?)</textarea>', resp.text, re.I)
         if result_match:
             text = result_match.group(1).strip()
-            # Chỉ lấy chữ cái
             text = re.sub(r'[^a-zA-Z]', '', text).lower()
             return text
         
@@ -324,10 +323,8 @@ def get_services(session: requests.Session) -> tuple:
         soup = BeautifulSoup(html_content, 'html.parser')
         services = []
         
-        # Cách 1: Tìm card service từ class chứa 'col-'
         cards = soup.find_all('div', class_=re.compile(r'col-(?:lg|md|sm|xs)-[0-9]+'))
         
-        # Cách 2: Tìm div có chứa button t-*-button
         if not cards or len(cards) < 2:
             cards = []
             buttons = soup.find_all('button', class_=re.compile(r't-[a-z]+-button'))
@@ -338,11 +335,9 @@ def get_services(session: requests.Session) -> tuple:
                 if parent and parent not in cards:
                     cards.append(parent)
         
-        # Cách 3: Tìm div có class chứa 'service' hoặc 'menu'
         if not cards or len(cards) < 2:
             cards = soup.find_all('div', class_=re.compile(r'service|menu|widget|box|card'))
         
-        # Cách 4: Quét tất cả div có class
         if not cards or len(cards) < 2:
             cards = soup.find_all('div', class_=True)
         
@@ -486,7 +481,7 @@ def extract_form_data(form) -> Optional[Dict]:
         return None
 
 # ============================================================
-# ZEFOY BOT CLASS (GIỮ NGUYÊN LOGIC buff.py)
+# ZEFOY BOT CLASS
 # ============================================================
 
 class ZefoyBot:
@@ -519,7 +514,6 @@ class ZefoyBot:
         captcha_url, form_data = get_captcha_image(self.session)
         
         if not captcha_url:
-            # Kiểm tra xem đã đăng nhập chưa
             r = self.session.get('https://zefoy.com/')
             if 't-followers-button' in r.text or 't-hearts-button' in r.text or 'colsmenu' in r.text:
                 self.captcha_solved = True
@@ -560,7 +554,6 @@ class ZefoyBot:
         if not image_bytes:
             return False
         
-        # OCR
         logger.info("Đang OCR captcha...")
         captcha_text = ocr_captcha(image_bytes)
         if not captcha_text:
@@ -612,7 +605,6 @@ class ZefoyBot:
             if not self.services:
                 self.get_services_list()
             
-            # Tìm service - GIỐNG buff.py
             selected_service = None
             for s in self.services:
                 if service_name.lower() in s['name'].lower():
@@ -630,7 +622,6 @@ class ZefoyBot:
                 results['message'] = f'Dịch vụ "{selected_service["name"]}" đang bảo trì'
                 return results
             
-            # Lấy form - GIỐNG buff.py
             form_info = get_service_form(self.home_html, selected_service.get('menu_class', ''))
             if not form_info or not form_info.get('action') or not form_info.get('input_name'):
                 r = self.session.get('https://zefoy.com/')
@@ -644,7 +635,6 @@ class ZefoyBot:
             action_url = f"https://zefoy.com/{form_info['action'].lstrip('/')}"
             input_name = form_info['input_name']
             
-            # AJAX headers - GIỐNG buff.py
             ajax_headers = {
                 'accept': '*/*',
                 'accept-language': 'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.7',
@@ -660,7 +650,6 @@ class ZefoyBot:
                 try:
                     search_data = {input_name: video_url}
                     
-                    # Gửi tìm kiếm - GIỐNG buff.py (thử 3 lần)
                     for attempt in range(3):
                         r = self.session.post(action_url, headers=ajax_headers, data=search_data)
                         decoded_response = decode_zefoy_response(r.text)
@@ -677,13 +666,11 @@ class ZefoyBot:
                         if attempt < 2:
                             time.sleep(2.5)
                     
-                    # Kiểm tra cooldown - GIỐNG buff.py
                     if total_wait > 0:
                         results['errors'].append(f"Cooldown: {countdown_text}")
                         results['message'] = f"Đang chờ cooldown: {countdown_text}"
                         return results
                     
-                    # Tìm form submit - GIỐNG buff.py
                     if form or submit_btn:
                         target_form = form if form else submit_btn.find_parent('form')
                         submit_action = target_form.get('action') if target_form else None
@@ -699,7 +686,6 @@ class ZefoyBot:
                             if name:
                                 submit_data[name] = val
                         
-                        # Chọn option cao nhất - GIỐNG buff.py
                         selects = target_form.find_all('select') if target_form else soup.find_all('select')
                         for sel in selects:
                             name = sel.get('name')
@@ -727,20 +713,18 @@ class ZefoyBot:
                         if actual_btn and actual_btn.get('name'):
                             submit_data[actual_btn.get('name')] = actual_btn.get('value', '')
                         
-                        # Gửi boost - GIỐNG buff.py
                         boost_r = self.session.post(submit_url, headers=ajax_headers, data=submit_data)
                         decoded_boost = decode_zefoy_response(boost_r.text)
                         result_text = clean_html_text(decoded_boost)
                         
                         if not result_text:
-                            result_text = "Phản hồi không chứa thông báo văn bản. Hãy kiểm tra lại TikTok."
+                            result_text = "Phản hồi không chứa thông báo văn bản."
                         
                         runs += 1
                         results['runs'] = runs
                         results['message'] = result_text
                         results['success'] = True
                         
-                        # Chờ 10 giây - GIỐNG buff.py
                         if runs < max_runs:
                             time.sleep(10)
                     else:
@@ -803,7 +787,7 @@ class BoostRequest(BaseModel):
     max_runs: int = 10
 
 # ============================================================
-# GIAO DIỆN WEB HTML
+# GIAO DIỆN WEB HTML (ĐÃ FIX LỖI PARSE JSON)
 # ============================================================
 
 HTML_TEMPLATE = """
@@ -1172,7 +1156,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- KHỞI TẠO -->
         <div class="card">
             <h3>🚀 Khởi tạo Session (Tự động captcha)</h3>
             <p style="color:var(--text-muted);font-size:0.85em;margin-bottom:12px;">
@@ -1185,7 +1168,6 @@ HTML_TEMPLATE = """
             <div id="resultBox" class="result-box"></div>
         </div>
 
-        <!-- DỊCH VỤ -->
         <div class="card" id="servicesCard" style="display:none;">
             <h3>📋 Danh sách dịch vụ</h3>
             <div id="servicesContainer">
@@ -1195,7 +1177,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- BOOST -->
         <div class="card" id="boostCard" style="display:none;">
             <h3>🚀 Thực hiện Boost</h3>
             <div class="form-group">
@@ -1225,7 +1206,6 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- LOGS -->
         <div class="card">
             <h3>📊 Logs System</h3>
             <div class="logs-container" id="logsContainer">
@@ -1242,7 +1222,6 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
-        // ===== MATRIX RAIN =====
         (function() {
             const canvas = document.getElementById('matrix');
             const ctx = canvas.getContext('2d');
@@ -1271,7 +1250,6 @@ HTML_TEMPLATE = """
             });
         })();
 
-        // ===== STATE =====
         let SESSION_ID = null;
         let isRunning = false;
         let totalRuns = 0;
@@ -1293,7 +1271,6 @@ HTML_TEMPLATE = """
         const servicesCard = $('servicesCard');
         const boostCard = $('boostCard');
 
-        // ===== LOGS =====
         function addLog(message, type = 'system') {
             const time = new Date().toLocaleTimeString();
             const entry = document.createElement('div');
@@ -1303,17 +1280,17 @@ HTML_TEMPLATE = """
             logsContainer.scrollTop = logsContainer.scrollHeight;
         }
 
-        // ===== SHOW RESULT =====
         function showResult(el, msg, type = 'info') {
             el.textContent = msg;
             el.className = 'result-box show ' + type;
+            el.style.display = 'block';
         }
         function hideResult(el) {
             el.className = 'result-box';
             el.textContent = '';
+            el.style.display = 'none';
         }
 
-        // ===== UPDATE STATUS =====
         function updateStatus(authenticated, services = 0) {
             if (authenticated) {
                 authStatus.textContent = '🟢 Đã kết nối';
@@ -1325,7 +1302,6 @@ HTML_TEMPLATE = """
             serviceCount.textContent = services;
         }
 
-        // ===== RENDER SERVICES =====
         function renderServices(services) {
             if (!services || services.length === 0) {
                 servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px;">Không có dịch vụ nào</div>';
@@ -1356,7 +1332,6 @@ HTML_TEMPLATE = """
             boostCard.style.display = 'block';
         }
 
-        // ===== API CALLS =====
         async function startSession() {
             showResult(resultBox, '⏳ Đang khởi tạo session + tự động giải captcha...', 'info');
             addLog('⏳ Đang khởi tạo session...', 'system');
@@ -1367,7 +1342,16 @@ HTML_TEMPLATE = """
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({})
                 });
-                const data = await res.json();
+                
+                const text = await res.text();
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    showResult(resultBox, '❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
+                    addLog('❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
+                    return;
+                }
                 
                 if (data.success) {
                     SESSION_ID = data.session_id;
@@ -1384,8 +1368,8 @@ HTML_TEMPLATE = """
                     addLog('❌ Lỗi: ' + (data.message || data.detail || 'Không xác định'), 'error');
                 }
             } catch (e) {
-                showResult(resultBox, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi: ' + e.message, 'error');
+                showResult(resultBox, '❌ Lỗi kết nối: ' + e.message, 'error');
+                addLog('❌ Lỗi kết nối: ' + e.message, 'error');
             }
         }
 
@@ -1404,7 +1388,15 @@ HTML_TEMPLATE = """
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ session_id: SESSION_ID })
                 });
-                const data = await res.json();
+                
+                const text = await res.text();
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    showResult(resultBox, '❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
+                    return;
+                }
                 
                 if (data.success) {
                     renderServices(data.services);
@@ -1416,8 +1408,8 @@ HTML_TEMPLATE = """
                     addLog('❌ Lỗi: ' + (data.message || data.detail || 'Không xác định'), 'error');
                 }
             } catch (e) {
-                showResult(resultBox, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi: ' + e.message, 'error');
+                showResult(resultBox, '❌ Lỗi kết nối: ' + e.message, 'error');
+                addLog('❌ Lỗi kết nối: ' + e.message, 'error');
             }
         }
 
@@ -1464,7 +1456,16 @@ HTML_TEMPLATE = """
                         max_runs: runs
                     })
                 });
-                const data = await res.json();
+                
+                const text = await res.text();
+                let data;
+                try {
+                    data = JSON.parse(text);
+                } catch (e) {
+                    showResult(boostResult, '❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
+                    addLog('❌ Lỗi parse JSON: ' + text.substring(0, 200), 'error');
+                    return;
+                }
                 
                 progressFill.style.width = '100%';
                 progressText.textContent = 'Hoàn tất!';
@@ -1545,12 +1546,10 @@ async def start_session():
     
     # Thử authenticate - nếu chưa login thì tự động giải captcha
     if not bot.authenticate():
-        # Tự động giải captcha
         logger.info("Đang tự động giải captcha...")
         if not bot.auto_solve_captcha():
             raise HTTPException(500, "Không thể giải captcha tự động. Vui lòng thử lại.")
         
-        # Kiểm tra lại
         if not bot.authenticate():
             raise HTTPException(500, "Captcha giải nhưng không đăng nhập được. Vui lòng thử lại.")
     
