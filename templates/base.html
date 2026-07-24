@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="vi"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Buff API{% endblock %}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head><body>
+<nav class="nav">
+  <a href="/" class="brand">⚡ Buff<span>API</span></a>
+  <div class="links">
+    <a href="/">Home</a>
+    <a href="/admin">Admin</a>
+  </div>
+</nav>
+{% with msgs = get_flashed_messages(with_categories=true) %}
+  {% for cat,m in msgs %}<div class="flash {{cat}}">{{m}}</div>{% endfor %}
+{% endwith %}
+<main class="wrap">{% block body %}{% endblock %}</main>
+<footer class="foot">© Buff API · Deploy Render · mducdeptrai</footer>
+</body></html>

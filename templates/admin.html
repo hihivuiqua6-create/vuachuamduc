@@ -1,0 +1,36 @@
+{% extends "base.html" %}{% block body %}
+<section class="card">
+  <div class="row between">
+    <h2>⚙️ Admin</h2>
+    <a class="btn ghost" href="/admin/logout">Logout</a>
+  </div>
+  <div class="stats">
+    <div><b>{{ stats.total_buffs }}</b><span>Tổng buff</span></div>
+    <div><b>{{ tg_users|length }}</b><span>User Telegram</span></div>
+    <div><b>{{ 'ON' if bot_enabled else 'OFF' }}</b><span>Bot</span></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Cookie & User-Agent Zefoy</h2>
+  <form method="post" action="/admin/save" class="form">
+    <label>Cookie string</label>
+    <textarea name="cookie" rows="4" placeholder="PHPSESSID=...; cf_clearance=...">{{ cookie }}</textarea>
+    <label>User-Agent</label>
+    <input name="user_agent" value="{{ ua }}">
+    <button class="btn">Lưu</button>
+  </form>
+  <p class="note">Cookie này dùng cho toàn bộ API và bot Telegram. Cần đã pass captcha Zefoy trước.</p>
+</section>
+
+<section class="card">
+  <h2>👥 User Telegram ({{ tg_users|length }})</h2>
+  <table class="tbl">
+    <tr><th>TID</th><th>User</th><th>Verified</th><th>Ngày</th><th>Đã buff</th></tr>
+    {% for tid,u in tg_users.items() %}
+    <tr><td>{{ tid }}</td><td>@{{ u.username }}</td><td>{{ u.verified_at[:19] if u.verified_at }}</td>
+        <td>{{ u.day }}</td><td>{{ u.count }}</td></tr>
+    {% else %}<tr><td colspan="5" class="muted">Chưa có user</td></tr>{% endfor %}
+  </table>
+</section>
+{% endblock %}
