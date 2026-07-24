@@ -1,59 +1,55 @@
+"""
+Zefoy Web API - FastAPI với logic từ buff.py
+Fix cho layout mới của Zefoy
+"""
+
+from __future__ import annotations
+
 import os
 import re
 import sys
 import time
-import html
 import json
 import base64
+import uuid
+import random
 import urllib.parse
-import logging
-from flask import Flask, request, jsonify, render_template_string
-from flask_cors import CORS
+from typing import Any, Optional, Dict, List
+from string import ascii_letters, digits
 
-try:
-    import requests
-    from bs4 import BeautifulSoup
-except ImportError:
-    print("Please install: pip install requests beautifulsoup4")
-    sys.exit(1)
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
+import requests
+from bs4 import BeautifulSoup
 
 # ============================================================
 # LOGGING
 # ============================================================
+import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# FLASK APP
+# FASTAPI APP
 # ============================================================
-app = Flask(__name__)
-CORS(app)
-
-# ============================================================
-# CONFIG
-# ============================================================
-CONFIG_FILE = 'config.json'
-
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {
-        'cookie_string': '',
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-
-def save_config(config):
-    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
-
-CONFIG = load_config()
+app = FastAPI(title="Zefoy Bot API", version="3.0.3")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ============================================================
-# ZEFOY BOT LOGIC - FIX CHO LAYOUT MỚI
+# ZEFOY BOT LOGIC (TỪ buff.py)
 # ============================================================
 
-def parse_cookie_string(cookie_str):
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+DEFAULT_BASE_URL = "https://zefoy.com"
+
+def parse_cookie_string(cookie_str: str) -> Dict[str, str]:
     cookies = {}
     for item in cookie_str.split(';'):
         item = item.strip()
@@ -62,7 +58,8 @@ def parse_cookie_string(cookie_str):
             cookies[k.strip()] = v.strip()
     return cookies
 
-def decode_zefoy_response(text):
+def decode_zefoy_response(text: str) -> str:
+    """Decode response từ Zefoy (base64 ngược) - GIỐNG buff.py"""
     text = text.strip()
     if not text:
         return text
@@ -103,11 +100,12 @@ def decode_zefoy_response(text):
         
     return text
 
-def clean_html_text(html_content):
+def clean_html_text(html_content: str) -> str:
     soup = BeautifulSoup(html_content, 'html.parser')
     return soup.get_text(separator=' ').strip()
 
-def extract_cooldown_seconds(decoded_response):
+def extract_cooldown_seconds(decoded_response: str) -> tuple:
+    """Trích xuất thời gian chờ - GIỐNG buff.py"""
     soup = BeautifulSoup(decoded_response, 'html.parser')
     
     countdown_tag = soup.find(id='login-countdown') or soup.find(class_=re.compile(r'countdown'))
@@ -154,8 +152,7 @@ def extract_cooldown_seconds(decoded_response):
 
     return 0, ""
 
-# ===== FIX: HÀM GET_SERVICES CHO LAYOUT MỚI =====
-def get_services(session):
+def get_services(session: requests.Session) -> tuple:
     """Lấy danh sách dịch vụ - FIX cho layout mới của Zefoy"""
     try:
         r = session.get('https://zefoy.com/')
@@ -164,10 +161,10 @@ def get_services(session):
         soup = BeautifulSoup(html_content, 'html.parser')
         services = []
         
-        # ===== CÁCH 1: Tìm card service từ class chứa 'col-' =====
+        # CÁCH 1: Tìm card service từ class chứa 'col-'
         cards = soup.find_all('div', class_=re.compile(r'col-(?:lg|md|sm|xs)-[0-9]+'))
         
-        # ===== CÁCH 2: Tìm div có chứa button t-*-button =====
+        # CÁCH 2: Tìm div có chứa button t-*-button
         if not cards or len(cards) < 2:
             cards = []
             buttons = soup.find_all('button', class_=re.compile(r't-[a-z]+-button'))
@@ -178,20 +175,18 @@ def get_services(session):
                 if parent and parent not in cards:
                     cards.append(parent)
         
-        # ===== CÁCH 3: Tìm div có class chứa 'service' hoặc 'menu' =====
+        # CÁCH 3: Tìm div có class chứa 'service' hoặc 'menu'
         if not cards or len(cards) < 2:
             cards = soup.find_all('div', class_=re.compile(r'service|menu|widget|box|card'))
         
-        # ===== CÁCH 4: Quét tất cả div có class =====
+        # CÁCH 4: Quét tất cả div có class
         if not cards or len(cards) < 2:
             cards = soup.find_all('div', class_=True)
         
-        # Lọc và xử lý
         seen_titles = set()
         for card in cards:
             try:
-                # Lấy title
-                title_tag = card.find('h5') or card.find('h4') or card.find('h3') or card.find('strong') or card.find('span', class_=re.compile(r'title|name|label'))
+                title_tag = card.find('h5') or card.find('h4') or card.find('h3') or card.find('strong')
                 if not title_tag:
                     continue
                 
@@ -199,25 +194,19 @@ def get_services(session):
                 if not title or len(title) < 2 or title in seen_titles:
                     continue
                 
-                # Bỏ qua các title không phải dịch vụ
                 if any(x in title.lower() for x in ['join', 'youtube', 'telegram', 'copyright', 'follow', 'soon', 'update', 'zefoy', 'home', 'welcome', 'terms', 'privacy', 'contact']):
                     continue
                 
                 seen_titles.add(title)
                 
-                # Lấy button
                 btn = card.find('button')
                 if not btn:
                     btn = card.find('input', type='submit')
-                if not btn:
-                    btn = card.find('a', class_=re.compile(r'btn|button'))
                 
-                # Kiểm tra active
                 is_active = True
                 if btn and hasattr(btn, 'attrs'):
                     is_active = 'disabled' not in btn.attrs
                 
-                # Lấy class button
                 btn_class = ""
                 if btn and hasattr(btn, 'get'):
                     for cls in btn.get('class', []):
@@ -225,11 +214,9 @@ def get_services(session):
                             btn_class = cls
                             break
                 
-                # Lấy status
                 status_tag = card.find(class_='badge') or card.find('small') or card.find('span', class_=re.compile(r'status|badge|label|alert'))
                 status_text = status_tag.text.strip() if status_tag else ("ON" if is_active else "OFF")
                 
-                # Lấy menu_class
                 menu_class = ""
                 if btn_class:
                     menu_class = btn_class.replace('-button', '-menu')
@@ -266,52 +253,17 @@ def get_services(session):
             except Exception as e:
                 continue
         
-        # Nếu không tìm thấy service nào, thử cách cuối: lấy từ các form
-        if not services:
-            forms = soup.find_all('form')
-            for form in forms:
-                try:
-                    title_tag = form.find_previous('h5') or form.find_previous('h4') or form.find_previous('h3')
-                    if not title_tag:
-                        continue
-                    
-                    title = title_tag.text.strip()
-                    if not title or title in seen_titles:
-                        continue
-                    
-                    if any(x in title.lower() for x in ['join', 'youtube', 'telegram', 'copyright']):
-                        continue
-                    
-                    seen_titles.add(title)
-                    
-                    btn = form.find('button') or form.find('input', type='submit')
-                    is_active = True
-                    if btn and hasattr(btn, 'attrs'):
-                        is_active = 'disabled' not in btn.attrs
-                    
-                    services.append({
-                        'name': title,
-                        'active': is_active,
-                        'status': 'ON' if is_active else 'OFF',
-                        'btn_class': '',
-                        'menu_class': ''
-                    })
-                except:
-                    continue
-        
         return services, html_content
         
     except Exception as e:
         logger.error(f"Error in get_services: {e}")
         return [], ""
 
-# ===== FIX: HÀM GET_SERVICE_FORM CHO LAYOUT MỚI =====
-def get_service_form(html_content, menu_class):
+def get_service_form(html_content: str, menu_class: str) -> Optional[Dict]:
     """Lấy form cho dịch vụ - FIX cho layout mới"""
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Cách 1: Tìm bằng menu_class
         if menu_class:
             menu_div = soup.find('div', class_=menu_class)
             if menu_div:
@@ -319,7 +271,6 @@ def get_service_form(html_content, menu_class):
                 if form:
                     return extract_form_data(form)
         
-        # Cách 2: Tìm tất cả form và khớp với service
         forms = soup.find_all('form')
         for form in forms:
             title_tag = form.find_previous('h5') or form.find_previous('h4') or form.find_previous('h3')
@@ -328,19 +279,16 @@ def get_service_form(html_content, menu_class):
                 if menu_class and title.lower().replace(' ', '-') in menu_class.lower():
                     return extract_form_data(form)
         
-        # Cách 3: Lấy form đầu tiên có input search
         for form in forms:
             search_input = form.find('input', type='search') or form.find('input', class_=re.compile(r'search|form-control'))
             if search_input:
                 return extract_form_data(form)
         
-        # Cách 4: Lấy form có action chứa 'c2VuZ'
         for form in forms:
             action = form.get('action', '')
             if 'c2VuZ' in action:
                 return extract_form_data(form)
         
-        # Cách 5: Lấy form đầu tiên
         if forms:
             return extract_form_data(forms[0])
         
@@ -350,8 +298,7 @@ def get_service_form(html_content, menu_class):
         logger.error(f"Error in get_service_form: {e}")
         return None
 
-def extract_form_data(form):
-    """Trích xuất dữ liệu từ form"""
+def extract_form_data(form) -> Optional[Dict]:
     try:
         action = form.get('action', '')
         if action and not action.startswith('http'):
@@ -380,14 +327,14 @@ def extract_form_data(form):
 # ============================================================
 
 class ZefoyBot:
-    def __init__(self, cookie_string, user_agent=None):
+    def __init__(self, cookie_string: str, user_agent: str = None):
         self.cookie_string = cookie_string
-        self.user_agent = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        self.user_agent = user_agent or DEFAULT_USER_AGENT
         self.session = self._setup_session()
         self.services = []
         self.home_html = ""
         
-    def _setup_session(self):
+    def _setup_session(self) -> requests.Session:
         session = requests.Session()
         cookies = parse_cookie_string(self.cookie_string)
         session.cookies.update(cookies)
@@ -407,7 +354,7 @@ class ZefoyBot:
         })
         return session
     
-    def authenticate(self):
+    def authenticate(self) -> bool:
         try:
             r = self.session.get('https://zefoy.com/')
             html_content = decode_zefoy_response(r.text)
@@ -426,13 +373,13 @@ class ZefoyBot:
             logger.error(f"Auth error: {e}")
             return False
     
-    def get_services_list(self):
+    def get_services_list(self) -> List[Dict]:
         services, home_html = get_services(self.session)
         self.services = services
         self.home_html = home_html
         return services
     
-    def boost(self, video_url, service_name, max_runs=10):
+    def boost(self, video_url: str, service_name: str, max_runs: int = 10) -> Dict:
         results = {
             'success': False,
             'message': '',
@@ -444,7 +391,6 @@ class ZefoyBot:
             if not self.services:
                 self.get_services_list()
             
-            # Tìm service - khớp tên gần đúng
             selected_service = None
             for s in self.services:
                 if service_name.lower() in s['name'].lower():
@@ -455,7 +401,7 @@ class ZefoyBot:
                     break
             
             if not selected_service:
-                results['message'] = f'Không tìm thấy dịch vụ "{service_name}". Danh sách: {", ".join([s["name"] for s in self.services[:5]])}...'
+                results['message'] = f'Không tìm thấy dịch vụ "{service_name}"'
                 return results
             
             if not selected_service['active']:
@@ -589,1121 +535,172 @@ class ZefoyBot:
         return results
 
 # ============================================================
-# HTML TEMPLATE - VỚI COMBOBOX ĐỘNG
+# SESSION STORE
 # ============================================================
-INDEX_HTML = """
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🔮 Zefoy Bot - TikTok Tool</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
-        
-        :root {
-            --primary: #00ff50;
-            --secondary: #00e5ff;
-            --danger: #ff2e63;
-            --warning: #ffaa00;
-            --bg-dark: #0a0a0a;
-            --bg-card: #111111;
-            --bg-input: #1a1a1a;
-            --border-color: #00ff50;
-            --text-color: #00ff50;
-            --text-muted: #888888;
-        }
-        
-        body {
-            font-family: 'Share Tech Mono', monospace;
-            background: var(--bg-dark);
-            color: var(--text-color);
-            min-height: 100vh;
-            overflow-x: hidden;
-        }
-        
-        #matrix {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: 0;
-            opacity: 0.06;
-            pointer-events: none;
-        }
-        
-        .container {
-            position: relative;
-            z-index: 1;
-            max-width: 1100px;
-            margin: 20px auto;
-            padding: 30px;
-            background: rgba(10, 10, 10, 0.92);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            box-shadow: 0 0 20px rgba(0,255,80,0.1);
-            backdrop-filter: blur(10px);
-            animation: fadeIn 0.8s ease;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(30px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .header {
-            text-align: center;
-            padding-bottom: 25px;
-            border-bottom: 1px solid rgba(0,255,80,0.15);
-            margin-bottom: 25px;
-        }
-        .glitch {
-            font-family: 'Orbitron', monospace;
-            font-size: 3em;
-            font-weight: 900;
-            color: var(--primary);
-            text-shadow: 0 0 30px rgba(0,255,80,0.3);
-            letter-spacing: 4px;
-            position: relative;
-            display: inline-block;
-        }
-        .glitch::before, .glitch::after {
-            content: attr(data-text);
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            opacity: 0.7;
-        }
-        .glitch::before { color: var(--danger); z-index: -1; animation: glitch1 3s infinite; }
-        .glitch::after { color: var(--secondary); z-index: -2; animation: glitch2 3s infinite; }
-        @keyframes glitch1 {
-            0%,100%{transform:translate(0)}
-            20%{transform:translate(-2px,2px)}
-            40%{transform:translate(2px,-2px)}
-            60%{transform:translate(-1px,1px)}
-            80%{transform:translate(1px,-1px)}
-        }
-        @keyframes glitch2 {
-            0%,100%{transform:translate(0)}
-            20%{transform:translate(2px,-2px)}
-            40%{transform:translate(-2px,2px)}
-            60%{transform:translate(1px,-1px)}
-            80%{transform:translate(-1px,1px)}
-        }
-        .subtitle {
-            font-size: 1.1em;
-            color: var(--secondary);
-            margin-top: 8px;
-            text-shadow: 0 0 20px rgba(0,229,255,0.2);
-            letter-spacing: 2px;
-        }
-        .version {
-            font-size: 0.85em;
-            color: var(--text-muted);
-            margin-top: 5px;
-        }
-        
-        .status-bar {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            padding: 15px 20px;
-            background: var(--bg-card);
-            border-radius: 8px;
-            border: 1px solid rgba(0,255,80,0.1);
-            margin-bottom: 25px;
-        }
-        .status-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 5px 0;
-        }
-        .status-item .label { color: var(--text-muted); font-size: 0.9em; }
-        .status-item .value { color: var(--primary); font-weight: bold; }
-        .status-item .value.offline { color: var(--danger); }
-        .status-item .value.online { color: var(--primary); animation: pulse 1.5s infinite; }
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
-        
-        .tabs {
-            display: flex;
-            gap: 5px;
-            margin-bottom: 25px;
-            border-bottom: 1px solid rgba(0,255,80,0.1);
-            padding-bottom: 5px;
-            flex-wrap: wrap;
-        }
-        .tab-btn {
-            background: transparent;
-            border: none;
-            color: var(--text-muted);
-            padding: 10px 25px;
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 0.95em;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            border-radius: 6px 6px 0 0;
-            position: relative;
-        }
-        .tab-btn:hover { color: var(--text-color); background: rgba(0,255,80,0.05); }
-        .tab-btn.active {
-            color: var(--primary);
-            background: rgba(0,255,80,0.08);
-        }
-        .tab-btn.active::after {
-            content: '';
-            position: absolute;
-            bottom: -6px;
-            left: 0;
-            width: 100%;
-            height: 2px;
-            background: var(--primary);
-            box-shadow: 0 0 20px rgba(0,255,80,0.5);
-        }
-        .tab-content { display: none; animation: fadeIn 0.4s ease; }
-        .tab-content.active { display: block; }
-        
-        .config-section, .boost-section, .logs-section {
-            background: var(--bg-card);
-            padding: 25px;
-            border-radius: 10px;
-            border: 1px solid rgba(0,255,80,0.08);
-            margin-bottom: 20px;
-        }
-        .config-section h3, .boost-section h3, .logs-section h3 {
-            color: var(--secondary);
-            font-family: 'Orbitron', monospace;
-            font-size: 1.1em;
-            margin-bottom: 20px;
-            text-shadow: 0 0 20px rgba(0,229,255,0.2);
-        }
-        
-        .form-group { margin-bottom: 18px; }
-        .form-group label {
-            display: block;
-            color: var(--text-color);
-            font-weight: bold;
-            margin-bottom: 6px;
-            font-size: 0.95em;
-        }
-        .form-group input, .form-group textarea, .form-group select {
-            width: 100%;
-            padding: 12px 15px;
-            background: var(--bg-input);
-            border: 1px solid rgba(0,255,80,0.15);
-            border-radius: 6px;
-            color: var(--text-color);
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 0.95em;
-            transition: all 0.3s ease;
-        }
-        .form-group input:focus, .form-group textarea:focus, .form-group select:focus {
-            outline: none;
-            border-color: var(--primary);
-            box-shadow: 0 0 20px rgba(0,255,80,0.1);
-        }
-        .form-group textarea { resize: vertical; min-height: 80px; }
-        .form-group select {
-            cursor: pointer;
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2300ff50' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 15px center;
-        }
-        .form-group select option { background: var(--bg-dark); color: var(--text-color); }
-        .form-group small {
-            display: block;
-            color: var(--text-muted);
-            font-size: 0.8em;
-            margin-top: 4px;
-        }
-        
-        .btn-group {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-top: 10px;
-        }
-        .btn {
-            padding: 10px 25px;
-            border: none;
-            border-radius: 6px;
-            font-family: 'Share Tech Mono', monospace;
-            font-size: 0.95em;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        .btn:hover { transform: translateY(-2px); box-shadow: 0 5px 25px rgba(0,0,0,0.4); }
-        .btn:active { transform: translateY(0); }
-        .btn-primary { background: var(--primary); color: var(--bg-dark); }
-        .btn-primary:hover { box-shadow: 0 0 30px rgba(0,255,80,0.3); }
-        .btn-secondary { background: var(--secondary); color: var(--bg-dark); }
-        .btn-secondary:hover { box-shadow: 0 0 30px rgba(0,229,255,0.3); }
-        .btn-success { background: var(--primary); color: var(--bg-dark); }
-        .btn-success:hover { box-shadow: 0 0 30px rgba(0,255,80,0.3); }
-        .btn-danger { background: var(--danger); color: #fff; }
-        .btn-danger:hover { box-shadow: 0 0 30px rgba(255,46,99,0.3); }
-        .btn-sm { padding: 6px 15px; font-size: 0.8em; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
-        
-        .result-box {
-            margin-top: 15px;
-            padding: 15px;
-            border-radius: 6px;
-            background: rgba(0,0,0,0.3);
-            border: 1px solid rgba(0,255,80,0.1);
-            min-height: 50px;
-            display: none;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-        .result-box.show { display: block; animation: fadeIn 0.4s ease; }
-        .result-box.success { border-color: var(--primary); color: var(--primary); }
-        .result-box.error { border-color: var(--danger); color: var(--danger); }
-        .result-box.info { border-color: var(--secondary); color: var(--secondary); }
-        .result-box.warning { border-color: var(--warning); color: var(--warning); }
-        
-        .services-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-            gap: 15px;
-            margin: 15px 0;
-        }
-        .service-card {
-            background: rgba(0,0,0,0.3);
-            padding: 15px;
-            border-radius: 8px;
-            border: 1px solid rgba(0,255,80,0.08);
-            text-align: center;
-        }
-        .service-card .name { font-size: 1em; color: var(--text-color); }
-        .service-card .status {
-            font-size: 0.85em;
-            margin-top: 5px;
-        }
-        .service-card .status.online { color: var(--primary); }
-        .service-card .status.offline { color: var(--danger); }
-        
-        .progress-box {
-            margin-top: 15px;
-            padding: 15px;
-            background: rgba(0,0,0,0.3);
-            border-radius: 6px;
-            border: 1px solid rgba(0,255,80,0.1);
-            display: none;
-        }
-        .progress-box.show { display: block; }
-        .progress-bar {
-            width: 100%;
-            height: 6px;
-            background: rgba(255,255,255,0.05);
-            border-radius: 3px;
-            overflow: hidden;
-        }
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, var(--primary), var(--secondary));
-            border-radius: 3px;
-            transition: width 0.5s ease;
-            width: 0%;
-        }
-        .progress-text {
-            color: var(--text-muted);
-            font-size: 0.9em;
-            margin-top: 8px;
-            text-align: center;
-        }
-        
-        .logs-container {
-            background: rgba(0,0,0,0.5);
-            border-radius: 6px;
-            padding: 15px;
-            max-height: 400px;
-            overflow-y: auto;
-            font-size: 0.85em;
-            border: 1px solid rgba(0,255,80,0.05);
-        }
-        .logs-container::-webkit-scrollbar { width: 4px; }
-        .logs-container::-webkit-scrollbar-track { background: rgba(0,0,0,0.3); }
-        .logs-container::-webkit-scrollbar-thumb { background: var(--primary); border-radius: 2px; }
-        .log-entry {
-            padding: 4px 0;
-            border-bottom: 1px solid rgba(255,255,255,0.02);
-            line-height: 1.6;
-        }
-        .log-entry.system { color: var(--secondary); }
-        .log-entry.success { color: var(--primary); }
-        .log-entry.error { color: var(--danger); }
-        .log-entry.warning { color: var(--warning); }
-        .log-entry .time { color: var(--text-muted); margin-right: 10px; }
-        
-        .footer {
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid rgba(0,255,80,0.08);
-            text-align: center;
-            color: var(--text-muted);
-            font-size: 0.8em;
-            display: flex;
-            justify-content: center;
-            gap: 15px;
-            flex-wrap: wrap;
-        }
-        .footer strong { color: var(--primary); }
-        
-        .guide { color: var(--text-muted); font-size: 0.9em; line-height: 1.8; }
-        .guide ol { padding-left: 20px; margin-bottom: 10px; }
-        .guide a { color: var(--secondary); text-decoration: none; }
-        .guide a:hover { text-decoration: underline; }
-        .code-block {
-            background: rgba(0,0,0,0.5);
-            padding: 12px;
-            border-radius: 4px;
-            color: var(--secondary);
-            font-size: 0.85em;
-            overflow-x: auto;
-            border: 1px solid rgba(0,229,255,0.1);
-            margin-top: 8px;
-        }
-        
-        .logs-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        .logs-actions { display: flex; gap: 8px; }
-        
-        .service-select-wrapper {
-            position: relative;
-        }
-        .service-select-wrapper select {
-            padding-right: 40px;
-        }
-        .service-select-wrapper .badge-count {
-            position: absolute;
-            right: 15px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--text-muted);
-            font-size: 0.7em;
-        }
-        
-        @media (max-width: 768px) {
-            .container { margin: 10px; padding: 15px; }
-            .glitch { font-size: 2em; }
-            .status-bar { grid-template-columns: 1fr; gap: 5px; }
-            .tab-btn { flex: 1; text-align: center; padding: 8px 10px; font-size: 0.8em; }
-            .btn-group { flex-direction: column; }
-            .btn { width: 100%; text-align: center; }
-            .services-grid { grid-template-columns: 1fr; }
-        }
-    </style>
-</head>
-<body>
-    <canvas id="matrix"></canvas>
+
+SESSIONS: Dict[str, Dict] = {}
+SESSION_TTL = 60 * 30
+
+def _new_session_state(cookie_string: str = "", user_agent: str = "") -> Dict:
+    return {
+        "bot": ZefoyBot(cookie_string, user_agent or DEFAULT_USER_AGENT),
+        "created": time.time(),
+        "last_used": time.time(),
+        "total_sent": 0,
+        "services": []
+    }
+
+def _get_session(session_id: str) -> Dict:
+    _gc()
+    st = SESSIONS.get(session_id)
+    if not st:
+        raise HTTPException(404, "Session không tồn tại. Vui lòng tạo session mới.")
+    st["last_used"] = time.time()
+    return st
+
+def _gc():
+    now = time.time()
+    dead = [k for k, v in SESSIONS.items() if now - v["last_used"] > SESSION_TTL]
+    for k in dead:
+        SESSIONS.pop(k, None)
+
+# ============================================================
+# PYDANTIC MODELS
+# ============================================================
+
+class StartRequest(BaseModel):
+    cookie_string: str
+    user_agent: Optional[str] = None
+
+class SolveRequest(BaseModel):
+    session_id: str
+    answer: str
+
+class SessionRequest(BaseModel):
+    session_id: str
+
+class BoostRequest(BaseModel):
+    session_id: str
+    video_url: str
+    service: str
+    max_runs: int = 10
+
+# ============================================================
+# API ROUTES
+# ============================================================
+
+@app.get("/")
+async def root():
+    return {
+        "name": "Zefoy Bot API",
+        "version": "3.0.3",
+        "status": "online",
+        "endpoints": [
+            "/api/start",
+            "/api/solve",
+            "/api/services",
+            "/api/boost",
+            "/api/status"
+        ]
+    }
+
+@app.post("/api/start")
+async def start_session(req: StartRequest):
+    """Tạo session mới với cookie"""
+    if not req.cookie_string:
+        raise HTTPException(400, "cookie_string không được để trống")
     
-    <div class="container">
-        <div class="header">
-            <div class="glitch" data-text="ZEFOY BOT">ZEFOY BOT</div>
-            <div class="subtitle">⚡ Tự động tăng tương tác TikTok ⚡</div>
-            <div class="version">v3.0.3 Premium | Made by TIENDEV</div>
-        </div>
-
-        <div class="status-bar" id="statusBar">
-            <div class="status-item">
-                <span class="label">🔐 Trạng thái:</span>
-                <span class="value offline" id="authStatus">Chưa kết nối</span>
-            </div>
-            <div class="status-item">
-                <span class="label">📦 Dịch vụ:</span>
-                <span class="value" id="serviceCount">0</span>
-            </div>
-            <div class="status-item">
-                <span class="label">🔄 Lượt chạy:</span>
-                <span class="value" id="runCount">0</span>
-            </div>
-        </div>
-
-        <div class="tabs">
-            <button class="tab-btn active" data-tab="config">⚙️ Cấu hình</button>
-            <button class="tab-btn" data-tab="services">📋 Dịch vụ</button>
-            <button class="tab-btn" data-tab="boost">🚀 Boost</button>
-            <button class="tab-btn" data-tab="logs">📊 Logs</button>
-        </div>
-
-        <!-- TAB CONFIG -->
-        <div class="tab-content active" id="tab-config">
-            <div class="config-section">
-                <h3>🔑 Cookie & User-Agent</h3>
-                <div class="form-group">
-                    <label for="cookieInput">🍪 Cookie String</label>
-                    <textarea id="cookieInput" placeholder="PHPSESSID=xxx; cf_clearance=xxx; ..." rows="4"></textarea>
-                    <small>Lấy cookie từ trình duyệt sau khi đăng nhập zefoy.com</small>
-                </div>
-                <div class="form-group">
-                    <label for="uaInput">🖥️ User-Agent</label>
-                    <input type="text" id="uaInput" placeholder="Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...">
-                    <small>Để trống dùng User-Agent mặc định</small>
-                </div>
-                <div class="btn-group">
-                    <button class="btn btn-primary" onclick="saveConfig()">💾 Lưu cấu hình</button>
-                    <button class="btn btn-secondary" onclick="testConnection()">🔌 Kiểm tra kết nối</button>
-                    <button class="btn btn-danger" onclick="clearConfig()">🗑️ Xóa</button>
-                </div>
-                <div id="configResult" class="result-box"></div>
-            </div>
-            <div class="config-section">
-                <h3>📋 Hướng dẫn lấy Cookie</h3>
-                <div class="guide">
-                    <ol>
-                        <li>Đăng nhập vào <a href="https://zefoy.com" target="_blank">zefoy.com</a></li>
-                        <li>Mở DevTools (F12) → Tab Application → Cookies</li>
-                        <li>Sao chép toàn bộ cookie string</li>
-                        <li>Dán vào ô Cookie String bên trên</li>
-                    </ol>
-                    <div class="code-block">
-                        // Ví dụ cookie string<br>
-                        PHPSESSID=xxx; cf_clearance=xxx; zf=xxx; za=200
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- TAB SERVICES -->
-        <div class="tab-content" id="tab-services">
-            <div class="config-section">
-                <h3>📋 Danh sách dịch vụ từ Zefoy</h3>
-                <button class="btn btn-secondary" onclick="loadServices()" style="margin-bottom:15px;">🔄 Tải danh sách</button>
-                <div id="servicesContainer">
-                    <div style="color:var(--text-muted);text-align:center;padding:20px;">
-                        Nhấn "Tải danh sách" để xem các dịch vụ có sẵn
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- TAB BOOST - COMBOBOX ĐỘNG -->
-        <div class="tab-content" id="tab-boost">
-            <div class="boost-section">
-                <h3>🚀 Thực hiện Boost</h3>
-                <div class="form-group">
-                    <label for="videoUrl">📹 Link TikTok</label>
-                    <input type="text" id="videoUrl" placeholder="https://www.tiktok.com/@username/video/123456789">
-                    <small>Link video hoặc profile TikTok</small>
-                </div>
-                <div class="form-group">
-                    <label for="serviceSelect">🎯 Dịch vụ</label>
-                    <div class="service-select-wrapper">
-                        <select id="serviceSelect">
-                            <option value="">-- Chọn dịch vụ --</option>
-                            <option value="loading" disabled>🔄 Đang tải...</option>
-                        </select>
-                        <span class="badge-count" id="serviceBadge">0 dịch vụ</span>
-                    </div>
-                    <small>Danh sách được lấy trực tiếp từ Zefoy, <a href="#" onclick="loadServicesAndUpdateSelect(); return false;" style="color:var(--secondary);">bấm để tải lại</a></small>
-                </div>
-                <div class="form-group">
-                    <label for="maxRuns">🔢 Số lượt chạy</label>
-                    <input type="number" id="maxRuns" value="10" min="1" max="100">
-                    <small>Mỗi lượt sẽ tăng tương tác, tối đa 100</small>
-                </div>
-                <div class="btn-group">
-                    <button class="btn btn-success" onclick="startBoost()">▶️ Bắt đầu Boost</button>
-                    <button class="btn btn-danger" onclick="stopBoost()">⏹️ Dừng</button>
-                </div>
-                <div id="boostResult" class="result-box"></div>
-                <div class="progress-box" id="boostProgress">
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="progressFill" style="width: 0%"></div>
-                    </div>
-                    <div class="progress-text" id="progressText">Đang xử lý...</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- TAB LOGS -->
-        <div class="tab-content" id="tab-logs">
-            <div class="logs-section">
-                <div class="logs-header">
-                    <h3>📊 Logs System</h3>
-                    <div class="logs-actions">
-                        <button class="btn btn-sm btn-secondary" onclick="clearLogs()">🗑️ Clear</button>
-                        <button class="btn btn-sm btn-primary" onclick="exportLogs()">📥 Export</button>
-                    </div>
-                </div>
-                <div class="logs-container" id="logsContainer">
-                    <div class="log-entry system"><span class="time">[SYSTEM]</span> 🔮 Zefoy Bot v3.0.3 đã sẵn sàng</div>
-                    <div class="log-entry system"><span class="time">[SYSTEM]</span> 👋 Chào mừng bạn đến với tool TikTok</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="footer">
-            <span>🔒 Bản quyền thuộc về <strong>TIENDEV</strong></span>
-            <span>|</span>
-            <span>⚡ Tool siêu VIP Pro</span>
-            <span>|</span>
-            <span>💀 Hacker Style</span>
-        </div>
-    </div>
-
-    <script>
-        // ===== MATRIX =====
-        (function() {
-            const c = document.getElementById('matrix');
-            const ctx = c.getContext('2d');
-            c.width = window.innerWidth;
-            c.height = window.innerHeight;
-            const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-            const fontSize = 14;
-            const columns = Math.floor(c.width / fontSize);
-            const drops = Array(columns).fill(1);
-            function draw() {
-                ctx.fillStyle = 'rgba(0,0,0,0.05)';
-                ctx.fillRect(0, 0, c.width, c.height);
-                ctx.fillStyle = '#00ff50';
-                ctx.font = fontSize + 'px monospace';
-                for (let i = 0; i < drops.length; i++) {
-                    ctx.fillText(chars[Math.floor(Math.random() * chars.length)], i * fontSize, drops[i] * fontSize);
-                    if (drops[i] * fontSize > c.height && Math.random() > 0.975) drops[i] = 0;
-                    drops[i]++;
-                }
+    session_id = uuid.uuid4().hex
+    st = _new_session_state(req.cookie_string, req.user_agent)
+    bot: ZefoyBot = st["bot"]
+    
+    # Kiểm tra auth
+    if not bot.authenticate():
+        raise HTTPException(401, "Cookie không hợp lệ hoặc đã hết hạn")
+    
+    # Lấy services
+    services = bot.get_services_list()
+    st["services"] = services
+    
+    SESSIONS[session_id] = st
+    
+    return {
+        "session_id": session_id,
+        "success": True,
+        "services": [
+            {
+                "name": s["name"],
+                "active": s["active"],
+                "status": s["status"]
             }
-            setInterval(draw, 60);
-            window.addEventListener('resize', () => {
-                c.width = window.innerWidth;
-                c.height = window.innerHeight;
-            });
-        })();
+            for s in services
+        ]
+    }
 
-        // ===== STATE =====
-        const state = {
-            isRunning: false,
-            totalRuns: 0,
-            successRuns: 0,
-            failRuns: 0,
-            logs: [],
-            services: []
-        };
-        
-        const $ = id => document.getElementById(id);
-        const cookieInput = $('cookieInput');
-        const uaInput = $('uaInput');
-        const videoUrl = $('videoUrl');
-        const serviceSelect = $('serviceSelect');
-        const maxRuns = $('maxRuns');
-        const authStatus = $('authStatus');
-        const serviceCount = $('serviceCount');
-        const runCount = $('runCount');
-        const logsContainer = $('logsContainer');
-        const configResult = $('configResult');
-        const boostResult = $('boostResult');
-        const boostProgress = $('boostProgress');
-        const progressFill = $('progressFill');
-        const progressText = $('progressText');
-        const servicesContainer = $('servicesContainer');
-        const serviceBadge = $('serviceBadge');
-
-        // ===== TABS =====
-        document.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-                this.classList.add('active');
-                document.getElementById('tab-' + this.dataset.tab).classList.add('active');
-            });
-        });
-
-        // ===== LOGS =====
-        function addLog(message, type = 'system') {
-            const time = new Date().toLocaleTimeString();
-            const entry = document.createElement('div');
-            entry.className = 'log-entry ' + type;
-            entry.innerHTML = '<span class="time">[' + time + ']</span> ' + message;
-            logsContainer.appendChild(entry);
-            logsContainer.scrollTop = logsContainer.scrollHeight;
-            state.logs.push({ time, message, type });
-        }
-        
-        function clearLogs() {
-            logsContainer.innerHTML = '';
-            state.logs = [];
-            addLog('🗑️ Logs đã được xóa', 'system');
-        }
-        
-        function exportLogs() {
-            const text = state.logs.map(l => '[' + l.time + '] ' + l.message).join('\\n');
-            const blob = new Blob([text], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'zefoy-logs-' + Date.now() + '.txt';
-            a.click();
-            URL.revokeObjectURL(url);
-            addLog('📥 Đã export logs', 'system');
-        }
-
-        function showResult(el, msg, type = 'info') {
-            el.textContent = msg;
-            el.className = 'result-box show ' + type;
-        }
-        
-        function hideResult(el) {
-            el.className = 'result-box';
-            el.textContent = '';
-        }
-
-        function updateStatus(authenticated, services = 0) {
-            if (authenticated) {
-                authStatus.textContent = '🟢 Đã kết nối';
-                authStatus.className = 'value online';
-            } else {
-                authStatus.textContent = '🔴 Chưa kết nối';
-                authStatus.className = 'value offline';
+@app.post("/api/services")
+async def get_services(req: SessionRequest):
+    """Lấy danh sách dịch vụ"""
+    st = _get_session(req.session_id)
+    bot: ZefoyBot = st["bot"]
+    
+    services = bot.get_services_list()
+    st["services"] = services
+    
+    return {
+        "success": True,
+        "services": [
+            {
+                "name": s["name"],
+                "active": s["active"],
+                "status": s["status"]
             }
-            serviceCount.textContent = services;
-        }
-        
-        function updateStats() {
-            runCount.textContent = state.totalRuns;
-        }
+            for s in services
+        ]
+    }
 
-        // ===== CẬP NHẬT COMBOBOX =====
-        function updateServiceSelect(services) {
-            // Lưu services vào state
-            state.services = services || [];
-            
-            // Clear select
-            serviceSelect.innerHTML = '';
-            
-            if (!services || services.length === 0) {
-                serviceSelect.innerHTML = '<option value="">-- Không có dịch vụ --</option>';
-                serviceBadge.textContent = '0 dịch vụ';
-                return;
-            }
-            
-            // Thêm option mặc định
-            const defaultOpt = document.createElement('option');
-            defaultOpt.value = '';
-            defaultOpt.textContent = '-- Chọn dịch vụ --';
-            serviceSelect.appendChild(defaultOpt);
-            
-            // Thêm các dịch vụ
-            let count = 0;
-            services.forEach(s => {
-                if (s.active) {
-                    const opt = document.createElement('option');
-                    opt.value = s.name;
-                    opt.textContent = '🟢 ' + s.name + ' (' + s.status + ')';
-                    serviceSelect.appendChild(opt);
-                    count++;
-                } else {
-                    const opt = document.createElement('option');
-                    opt.value = s.name;
-                    opt.textContent = '🔴 ' + s.name + ' (OFFLINE)';
-                    opt.style.color = '#ff2e63';
-                    serviceSelect.appendChild(opt);
-                }
-            });
-            
-            serviceBadge.textContent = count + ' dịch vụ online';
-            addLog('📋 Đã cập nhật combobox với ' + count + ' dịch vụ online', 'system');
-        }
+@app.post("/api/boost")
+async def boost(req: BoostRequest):
+    """Thực hiện boost"""
+    st = _get_session(req.session_id)
+    bot: ZefoyBot = st["bot"]
+    
+    # Kiểm tra auth
+    if not bot.authenticate():
+        raise HTTPException(401, "Session đã hết hạn. Vui lòng tạo session mới.")
+    
+    # Thực hiện boost
+    result = bot.boost(req.video_url, req.service, req.max_runs)
+    
+    if result.get("success"):
+        st["total_sent"] = st.get("total_sent", 0) + result.get("runs", 0)
+        result["total_sent"] = st["total_sent"]
+    
+    return result
 
-        // ===== TẢI SERVICES VÀ CẬP NHẬT COMBOBOX =====
-        async function loadServicesAndUpdateSelect() {
-            const cookie = cookieInput.value.trim();
-            if (!cookie) {
-                showResult(configResult, '⚠️ Vui lòng nhập Cookie trước!', 'error');
-                document.querySelector('[data-tab="config"]').click();
-                return;
-            }
-            
-            showResult(configResult, '⏳ Đang tải danh sách dịch vụ...', 'info');
-            
-            try {
-                const res = await fetch('/api/services', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        cookie_string: cookie,
-                        user_agent: uaInput.value.trim()
-                    })
-                });
-                const data = await res.json();
-                
-                if (data.success) {
-                    // Cập nhật combobox
-                    updateServiceSelect(data.data);
-                    
-                    // Cập nhật tab services
-                    renderServices(data.data);
-                    
-                    // Cập nhật status
-                    updateStatus(true, data.data.length);
-                    
-                    showResult(configResult, '✅ Đã tải ' + data.data.length + ' dịch vụ', 'success');
-                    addLog('✅ Đã tải ' + data.data.length + ' dịch vụ', 'success');
-                } else {
-                    showResult(configResult, '❌ ' + data.message, 'error');
-                    addLog('❌ Lỗi tải services: ' + data.message, 'error');
-                }
-            } catch (e) {
-                showResult(configResult, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi: ' + e.message, 'error');
-            }
-        }
+@app.post("/api/status")
+async def get_status(req: SessionRequest):
+    """Kiểm tra trạng thái session"""
+    st = _get_session(req.session_id)
+    bot: ZefoyBot = st["bot"]
+    
+    is_auth = bot.authenticate()
+    
+    return {
+        "success": True,
+        "authenticated": is_auth,
+        "total_sent": st.get("total_sent", 0),
+        "services": len(st.get("services", []))
+    }
 
-        // ===== RENDER SERVICES =====
-        function renderServices(services) {
-            if (!services || services.length === 0) {
-                servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;">Không có dịch vụ nào</div>';
-                return;
-            }
-            let html = '<div class="services-grid">';
-            services.forEach(s => {
-                const statusClass = s.active ? 'online' : 'offline';
-                const statusText = s.active ? '🟢 ONLINE' : '🔴 OFFLINE';
-                html += '<div class="service-card">';
-                html += '<div class="name">' + s.name + '</div>';
-                html += '<div class="status ' + statusClass + '">' + statusText + ' (' + s.status + ')</div>';
-                html += '</div>';
-            });
-            html += '</div>';
-            servicesContainer.innerHTML = html;
-        }
-
-        // ===== API CALLS =====
-        async function saveConfig() {
-            const cookie = cookieInput.value.trim();
-            const ua = uaInput.value.trim();
-            if (!cookie) {
-                showResult(configResult, '⚠️ Vui lòng nhập Cookie String!', 'error');
-                return;
-            }
-            showResult(configResult, '⏳ Đang lưu cấu hình...', 'info');
-            try {
-                const res = await fetch('/api/config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cookie_string: cookie, user_agent: ua })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    showResult(configResult, '✅ Lưu cấu hình thành công!', 'success');
-                    addLog('✅ Đã lưu cấu hình mới', 'success');
-                    await loadServicesAndUpdateSelect();
-                } else {
-                    showResult(configResult, '❌ ' + data.message, 'error');
-                    addLog('❌ Lỗi lưu config: ' + data.message, 'error');
-                }
-            } catch (e) {
-                showResult(configResult, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi: ' + e.message, 'error');
-            }
-        }
-
-        async function testConnection() {
-            const cookie = cookieInput.value.trim();
-            const ua = uaInput.value.trim();
-            if (!cookie) {
-                showResult(configResult, '⚠️ Vui lòng nhập Cookie String trước!', 'error');
-                return;
-            }
-            showResult(configResult, '⏳ Đang kiểm tra kết nối...', 'info');
-            try {
-                const res = await fetch('/api/test', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cookie_string: cookie, user_agent: ua })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    // Cập nhật combobox
-                    updateServiceSelect(data.services_list);
-                    renderServices(data.services_list);
-                    updateStatus(true, data.services || 0);
-                    showResult(configResult, '✅ Kết nối thành công! ' + (data.services || 0) + ' dịch vụ.', 'success');
-                    addLog('✅ Kết nối thành công, ' + (data.services || 0) + ' dịch vụ', 'success');
-                } else {
-                    updateStatus(false);
-                    showResult(configResult, '❌ ' + data.message, 'error');
-                    addLog('❌ Kết nối thất bại: ' + data.message, 'error');
-                }
-            } catch (e) {
-                updateStatus(false);
-                showResult(configResult, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi: ' + e.message, 'error');
-            }
-        }
-
-        function clearConfig() {
-            if (!confirm('Xóa cấu hình?')) return;
-            cookieInput.value = '';
-            uaInput.value = '';
-            hideResult(configResult);
-            updateStatus(false);
-            serviceSelect.innerHTML = '<option value="">-- Chọn dịch vụ --</option>';
-            serviceBadge.textContent = '0 dịch vụ';
-            addLog('🗑️ Đã xóa cấu hình', 'system');
-        }
-
-        async function loadServices() {
-            await loadServicesAndUpdateSelect();
-        }
-
-        // ===== START BOOST =====
-        async function startBoost() {
-            if (state.isRunning) {
-                addLog('⚠️ Bot đang chạy!', 'warning');
-                return;
-            }
-            
-            const url = videoUrl.value.trim();
-            if (!url) {
-                showResult(boostResult, '⚠️ Nhập link TikTok!', 'error');
-                return;
-            }
-            
-            const cookie = cookieInput.value.trim();
-            if (!cookie) {
-                showResult(boostResult, '⚠️ Cấu hình Cookie trước!', 'error');
-                document.querySelector('[data-tab="config"]').click();
-                return;
-            }
-            
-            const service = serviceSelect.value;
-            if (!service) {
-                showResult(boostResult, '⚠️ Chọn dịch vụ!', 'error');
-                return;
-            }
-            
-            const runs = parseInt(maxRuns.value) || 10;
-            
-            state.isRunning = true;
-            boostProgress.classList.add('show');
-            progressFill.style.width = '0%';
-            progressText.textContent = 'Đang bắt đầu...';
-            hideResult(boostResult);
-            addLog('🚀 Bắt đầu boost: ' + service + ' - ' + runs + ' lượt', 'system');
-            
-            try {
-                const res = await fetch('/api/boost', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        video_url: url,
-                        service: service,
-                        max_runs: runs,
-                        cookie_string: cookie,
-                        user_agent: uaInput.value.trim()
-                    })
-                });
-                const data = await res.json();
-                
-                progressFill.style.width = '100%';
-                progressText.textContent = 'Hoàn tất!';
-                
-                if (data.success) {
-                    state.totalRuns += data.runs || 0;
-                    state.successRuns += data.runs || 0;
-                    let msg = '✅ ' + (data.message || 'Boost thành công!');
-                    if (data.runs) msg += ' (' + data.runs + ' lượt)';
-                    if (data.errors && data.errors.length) {
-                        msg += '\\n⚠️ Lỗi: ' + data.errors.join('\\n');
-                    }
-                    showResult(boostResult, msg, 'success');
-                    addLog('✅ Boost thành công: ' + (data.runs || 0) + ' lượt', 'success');
-                } else {
-                    state.failRuns += 1;
-                    let msg = '❌ ' + (data.message || 'Lỗi không xác định');
-                    if (data.errors && data.errors.length) {
-                        msg += '\\n⚠️ ' + data.errors.join('\\n');
-                    }
-                    showResult(boostResult, msg, 'error');
-                    addLog('❌ Boost thất bại: ' + (data.message || ''), 'error');
-                }
-            } catch (e) {
-                state.failRuns += 1;
-                showResult(boostResult, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi boost: ' + e.message, 'error');
-            }
-            
-            setTimeout(() => {
-                boostProgress.classList.remove('show');
-                progressFill.style.width = '0%';
-            }, 3000);
-            
-            state.isRunning = false;
-            updateStats();
-        }
-
-        function stopBoost() {
-            if (!state.isRunning) {
-                addLog('⚠️ Bot không đang chạy', 'warning');
-                return;
-            }
-            state.isRunning = false;
-            addLog('⏹️ Đã dừng boost', 'warning');
-            showResult(boostResult, '⏹️ Đã dừng boost', 'warning');
-        }
-
-        // ===== LOAD CONFIG =====
-        window.onload = function() {
-            fetch('/api/config')
-                .then(res => res.json())
-                .then(data => {
-                    if (data.cookie_string) {
-                        cookieInput.value = data.cookie_string;
-                        addLog('📂 Đã tải cấu hình từ server', 'system');
-                    }
-                    if (data.user_agent) uaInput.value = data.user_agent;
-                    if (data.cookie_string) {
-                        setTimeout(() => {
-                            testConnection();
-                        }, 500);
-                    }
-                })
-                .catch(() => {});
-        };
-    </script>
-</body>
-</html>
-"""
-
-# ============================================================
-# FLASK ROUTES
-# ============================================================
-
-@app.route('/')
-def index():
-    return render_template_string(INDEX_HTML)
-
-@app.route('/api/config', methods=['GET'])
-def get_config():
-    return jsonify(CONFIG)
-
-@app.route('/api/config', methods=['POST'])
-def save_config_api():
-    try:
-        data = request.json
-        cookie = data.get('cookie_string', '').strip()
-        ua = data.get('user_agent', '').strip()
-        
-        if not cookie:
-            return jsonify({'success': False, 'message': 'Cookie không được để trống'}), 400
-        
-        CONFIG['cookie_string'] = cookie
-        if ua:
-            CONFIG['user_agent'] = ua
-        save_config(CONFIG)
-        return jsonify({'success': True, 'message': 'Đã lưu cấu hình'})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-@app.route('/api/test', methods=['POST'])
-def test_connection():
-    try:
-        data = request.json
-        cookie = data.get('cookie_string', '').strip()
-        ua = data.get('user_agent', '').strip()
-        
-        if not cookie:
-            return jsonify({'success': False, 'message': 'Cookie không được để trống'}), 400
-        
-        bot = ZefoyBot(cookie, ua or CONFIG.get('user_agent', ''))
-        
-        if bot.authenticate():
-            services = bot.get_services_list()
-            return jsonify({
-                'success': True,
-                'services': len(services),
-                'services_list': services,
-                'message': 'Kết nối thành công'
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'Cookie hết hạn hoặc không hợp lệ. Vui lòng cập nhật cookie mới.'
-            }), 401
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-@app.route('/api/services', methods=['POST'])
-def get_services_api():
-    try:
-        data = request.json or {}
-        cookie = data.get('cookie_string', '').strip()
-        ua = data.get('user_agent', '').strip()
-        
-        if not cookie:
-            cookie = CONFIG.get('cookie_string', '')
-        
-        if not cookie:
-            return jsonify({'success': False, 'message': 'Cookie không được để trống'}), 400
-        
-        bot = ZefoyBot(cookie, ua or CONFIG.get('user_agent', ''))
-        
-        if not bot.authenticate():
-            return jsonify({'success': False, 'message': 'Cookie hết hạn hoặc không hợp lệ'}), 401
-        
-        services = bot.get_services_list()
-        return jsonify({
-            'success': True,
-            'data': services,
-            'message': f'Found {len(services)} services'
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-@app.route('/api/boost', methods=['POST'])
-def boost_api():
-    try:
-        data = request.json
-        video_url = data.get('video_url', '').strip()
-        service = data.get('service', 'followers')
-        max_runs = int(data.get('max_runs', 10))
-        cookie = data.get('cookie_string', '').strip()
-        ua = data.get('user_agent', '').strip()
-        
-        if not video_url:
-            return jsonify({'success': False, 'message': 'video_url không được để trống'}), 400
-        
-        if not cookie:
-            return jsonify({'success': False, 'message': 'Cookie không được để trống'}), 400
-        
-        bot = ZefoyBot(cookie, ua or CONFIG.get('user_agent', ''))
-        result = bot.boost(video_url, service, max_runs)
-        
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e), 'runs': 0, 'errors': [str(e)]}), 500
-
-@app.route('/health')
-def health_check():
-    return jsonify({'status': 'healthy', 'service': 'Zefoy Bot API'})
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "sessions": len(SESSIONS)}
 
 # ============================================================
 # MAIN
 # ============================================================
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    debug = os.environ.get('DEBUG', 'false').lower() == 'true'
-    
-    if os.environ.get('COOKIE_STRING'):
-        CONFIG['cookie_string'] = os.environ.get('COOKIE_STRING')
-    if os.environ.get('USER_AGENT'):
-        CONFIG['user_agent'] = os.environ.get('USER_AGENT')
-    save_config(CONFIG)
-    
-    app.run(host='0.0.0.0', port=port, debug=debug)
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
