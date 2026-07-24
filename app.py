@@ -1,6 +1,6 @@
 """
 Zefoy Web API + Giao diện Web - FastAPI
-Logic từ buff.py gốc, fix layout mới của Zefoy
+Logic 100% từ buff.py gốc (có captcha, cooldown, submit form...)
 """
 
 from __future__ import annotations
@@ -9,17 +9,17 @@ import os
 import re
 import sys
 import time
+import html
 import json
 import base64
 import uuid
-import random
 import urllib.parse
+import subprocess
 from typing import Any, Optional, Dict, List
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import requests
 from bs4 import BeautifulSoup
@@ -43,7 +43,7 @@ app.add_middleware(
 )
 
 # ============================================================
-# ZEFOY BOT LOGIC (TỪ buff.py)
+# LOGIC TỪ buff.py GỐC (GIỐNG 100%)
 # ============================================================
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -59,6 +59,7 @@ def parse_cookie_string(cookie_str: str) -> Dict[str, str]:
     return cookies
 
 def decode_zefoy_response(text: str) -> str:
+    """GIỐNG HỆT buff.py decode"""
     text = text.strip()
     if not text:
         return text
@@ -104,6 +105,7 @@ def clean_html_text(html_content: str) -> str:
     return soup.get_text(separator=' ').strip()
 
 def extract_cooldown_seconds(decoded_response: str) -> tuple:
+    """GIỐNG HỆT buff.py extract_cooldown_seconds"""
     soup = BeautifulSoup(decoded_response, 'html.parser')
     
     countdown_tag = soup.find(id='login-countdown') or soup.find(class_=re.compile(r'countdown'))
@@ -150,7 +152,80 @@ def extract_cooldown_seconds(decoded_response: str) -> tuple:
 
     return 0, ""
 
+def get_captcha_image(session: requests.Session) -> tuple:
+    """GIỐNG HỆT buff.py get_captcha_image"""
+    t = str(int(time.time()))
+    params = {'getcapthca': t}
+    try:
+        r = session.get('https://zefoy.com/', params=params)
+        html_content = decode_zefoy_response(r.text)
+        
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        img_tag = soup.find('img', id='captcha-img')
+        if not img_tag:
+            img_tag = soup.find('img', src=re.compile(r'_CAPTCHA'))
+            
+        src = None
+        if img_tag:
+            src = img_tag.get('src')
+        else:
+            match = re.search(r'src="([^"]*_CAPTCHA=[^"]*)"', html_content)
+            if match:
+                src = match.group(1)
+                
+        if not src:
+            return None, None
+            
+        src = html.unescape(src)
+        if not src.startswith('http'):
+            src = 'https://zefoy.com' + src
+            
+        form_data = {}
+        form = soup.find('form')
+        if form:
+            for inp in form.find_all('input'):
+                name = inp.get('name')
+                val = inp.get('value', '')
+                if name:
+                    form_data[name] = val
+                    
+        return src, form_data
+    except Exception as e:
+        logger.error(f"Lỗi khi lấy ảnh Captcha: {e}")
+        return None, None
+
+def solve_captcha(session: requests.Session, captcha_text: str) -> bool:
+    """GIỐNG HỆT buff.py solve_captcha - gửi captcha"""
+    try:
+        # Lấy captcha image và form data
+        captcha_url, form_data = get_captcha_image(session)
+        
+        if not captcha_url:
+            return False
+            
+        if not form_data:
+            form_data = {}
+        form_data['captchalogin'] = captcha_text.lower()
+        
+        logger.info(f"Đang gửi mã Captcha: {captcha_text}")
+        post_resp = session.post('https://zefoy.com/', data=form_data)
+        
+        resp_text = post_resp.text
+        if 'Captcha code is incorrect' in resp_text or 'zbcd' in resp_text:
+            return False
+        else:
+            check_resp = session.get('https://zefoy.com/')
+            if 't-followers-button' in check_resp.text or 't-hearts-button' in check_resp.text or 'colsmenu' in check_resp.text:
+                return True
+            else:
+                return False
+    except Exception as e:
+        logger.error(f"Lỗi giải captcha: {e}")
+        return False
+
 def get_services(session: requests.Session) -> tuple:
+    """GIỐNG HỆT buff.py get_services - FIX cho layout mới"""
     try:
         r = session.get('https://zefoy.com/')
         html_content = decode_zefoy_response(r.text)
@@ -158,8 +233,10 @@ def get_services(session: requests.Session) -> tuple:
         soup = BeautifulSoup(html_content, 'html.parser')
         services = []
         
+        # Cách 1: Tìm card service từ class chứa 'col-'
         cards = soup.find_all('div', class_=re.compile(r'col-(?:lg|md|sm|xs)-[0-9]+'))
         
+        # Cách 2: Tìm div có chứa button t-*-button
         if not cards or len(cards) < 2:
             cards = []
             buttons = soup.find_all('button', class_=re.compile(r't-[a-z]+-button'))
@@ -170,9 +247,11 @@ def get_services(session: requests.Session) -> tuple:
                 if parent and parent not in cards:
                     cards.append(parent)
         
+        # Cách 3: Tìm div có class chứa 'service' hoặc 'menu'
         if not cards or len(cards) < 2:
             cards = soup.find_all('div', class_=re.compile(r'service|menu|widget|box|card'))
         
+        # Cách 4: Quét tất cả div có class
         if not cards or len(cards) < 2:
             cards = soup.find_all('div', class_=True)
         
@@ -253,6 +332,7 @@ def get_services(session: requests.Session) -> tuple:
         return [], ""
 
 def get_service_form(html_content: str, menu_class: str) -> Optional[Dict]:
+    """GIỐNG HỆT buff.py get_service_form"""
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         
@@ -315,7 +395,7 @@ def extract_form_data(form) -> Optional[Dict]:
         return None
 
 # ============================================================
-# ZEFOY BOT CLASS
+# ZEFOY BOT CLASS (GIỐNG HỆT buff.py)
 # ============================================================
 
 class ZefoyBot:
@@ -325,6 +405,7 @@ class ZefoyBot:
         self.session = self._setup_session()
         self.services = []
         self.home_html = ""
+        self.captcha_solved = False
         
     def _setup_session(self) -> requests.Session:
         session = requests.Session()
@@ -346,18 +427,53 @@ class ZefoyBot:
         })
         return session
     
+    def get_captcha(self) -> Optional[Dict]:
+        """Lấy ảnh captcha - GIỐNG buff.py"""
+        captcha_url, form_data = get_captcha_image(self.session)
+        
+        if not captcha_url:
+            # Kiểm tra xem đã đăng nhập chưa
+            r = self.session.get('https://zefoy.com/')
+            if 't-followers-button' in r.text or 't-hearts-button' in r.text or 'colsmenu' in r.text:
+                self.captcha_solved = True
+                return {'solved': True, 'message': 'Đã đăng nhập, không cần captcha'}
+            return None
+        
+        try:
+            img_resp = self.session.get(captcha_url)
+            img_b64 = base64.b64encode(img_resp.content).decode('ascii')
+            return {
+                'solved': False,
+                'captcha_b64': img_b64,
+                'form_data': form_data,
+                'message': 'Vui lòng nhập mã captcha'
+            }
+        except Exception as e:
+            logger.error(f"Lỗi tải captcha: {e}")
+            return None
+    
+    def submit_captcha(self, captcha_text: str) -> bool:
+        """Gửi captcha - GIỐNG buff.py"""
+        result = solve_captcha(self.session, captcha_text)
+        if result:
+            self.captcha_solved = True
+        return result
+    
     def authenticate(self) -> bool:
+        """Kiểm tra đăng nhập - GIỐNG buff.py"""
         try:
             r = self.session.get('https://zefoy.com/')
             html_content = decode_zefoy_response(r.text)
             
             if 't-followers-button' in html_content or 't-hearts-button' in html_content or 'colsmenu' in html_content:
+                self.captcha_solved = True
                 return True
             
             if 'card-title' in html_content or 'col-' in html_content:
                 soup = BeautifulSoup(html_content, 'html.parser')
                 buttons = soup.find_all('button', class_=re.compile(r't-[a-z]+-button'))
                 if buttons:
+                    self.captcha_solved = True
                     return True
             
             return False
@@ -366,12 +482,14 @@ class ZefoyBot:
             return False
     
     def get_services_list(self) -> List[Dict]:
+        """Lấy dịch vụ - GIỐNG buff.py"""
         services, home_html = get_services(self.session)
         self.services = services
         self.home_html = home_html
         return services
     
     def boost(self, video_url: str, service_name: str, max_runs: int = 10) -> Dict:
+        """Boost - GIỐNG HỆT buff.py main loop"""
         results = {
             'success': False,
             'message': '',
@@ -383,6 +501,7 @@ class ZefoyBot:
             if not self.services:
                 self.get_services_list()
             
+            # Tìm service - GIỐNG buff.py
             selected_service = None
             for s in self.services:
                 if service_name.lower() in s['name'].lower():
@@ -400,6 +519,7 @@ class ZefoyBot:
                 results['message'] = f'Dịch vụ "{selected_service["name"]}" đang bảo trì'
                 return results
             
+            # Lấy form - GIỐNG buff.py
             form_info = get_service_form(self.home_html, selected_service.get('menu_class', ''))
             if not form_info or not form_info.get('action') or not form_info.get('input_name'):
                 r = self.session.get('https://zefoy.com/')
@@ -413,6 +533,7 @@ class ZefoyBot:
             action_url = f"https://zefoy.com/{form_info['action'].lstrip('/')}"
             input_name = form_info['input_name']
             
+            # AJAX headers - GIỐNG buff.py
             ajax_headers = {
                 'accept': '*/*',
                 'accept-language': 'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.7',
@@ -428,92 +549,92 @@ class ZefoyBot:
                 try:
                     search_data = {input_name: video_url}
                     
-                    r = self.session.post(action_url, headers=ajax_headers, data=search_data)
-                    decoded_response = decode_zefoy_response(r.text)
+                    # Gửi tìm kiếm - GIỐNG buff.py (thử 3 lần)
+                    for attempt in range(3):
+                        r = self.session.post(action_url, headers=ajax_headers, data=search_data)
+                        decoded_response = decode_zefoy_response(r.text)
+                        
+                        soup = BeautifulSoup(decoded_response, 'html.parser')
+                        total_wait, countdown_text = extract_cooldown_seconds(decoded_response)
+                        
+                        form = soup.find('form')
+                        submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn'))
+                        
+                        if (total_wait > 0 and "Mặc định 120s" not in countdown_text) or form or submit_btn:
+                            break
+                        
+                        if attempt < 2:
+                            time.sleep(2.5)
                     
-                    soup = BeautifulSoup(decoded_response, 'html.parser')
-                    total_wait, countdown_text = extract_cooldown_seconds(decoded_response)
-                    
+                    # Kiểm tra cooldown - GIỐNG buff.py
                     if total_wait > 0:
                         results['errors'].append(f"Cooldown: {countdown_text}")
                         results['message'] = f"Đang chờ cooldown: {countdown_text}"
                         return results
                     
-                    submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn|submit'))
-                    if not submit_btn:
-                        submit_btn = soup.find('input', type='submit')
-                    
-                    if submit_btn:
-                        target_form = submit_btn.find_parent('form')
-                        if not target_form:
-                            target_form = soup.find('form')
+                    # Tìm form submit - GIỐNG buff.py
+                    if form or submit_btn:
+                        target_form = form if form else submit_btn.find_parent('form')
+                        submit_action = target_form.get('action') if target_form else None
+                        if not submit_action or submit_action.strip() == "" or submit_action == "/" or not submit_action.startswith('c2VuZ'):
+                            submit_action = form_info['action']
+                        submit_url = f"https://zefoy.com/{submit_action}"
                         
-                        if target_form:
-                            submit_action = target_form.get('action', '')
-                            if submit_action and not submit_action.startswith('http'):
-                                submit_action = f"https://zefoy.com/{submit_action.lstrip('/')}"
-                            elif not submit_action:
-                                submit_action = action_url
-                            
-                            submit_data = {}
-                            for inp in target_form.find_all('input'):
-                                name = inp.get('name')
-                                val = inp.get('value', '')
-                                if name:
-                                    submit_data[name] = val
-                            
-                            selects = target_form.find_all('select')
-                            for sel in selects:
-                                name = sel.get('name')
-                                if not name:
+                        submit_data = {}
+                        inputs = target_form.find_all('input') if target_form else soup.find_all('input')
+                        for inp in inputs:
+                            name = inp.get('name')
+                            val = inp.get('value', '')
+                            if name:
+                                submit_data[name] = val
+                        
+                        # Chọn option cao nhất - GIỐNG buff.py
+                        selects = target_form.find_all('select') if target_form else soup.find_all('select')
+                        for sel in selects:
+                            name = sel.get('name')
+                            if not name:
+                                continue
+                            options = sel.find_all('option')
+                            max_val = None
+                            max_int = -1
+                            for opt in options:
+                                val = opt.get('value', '').strip()
+                                if not val:
                                     continue
-                                options = sel.find_all('option')
-                                max_val = None
-                                max_int = -1
-                                for opt in options:
-                                    val = opt.get('value', '').strip()
-                                    if not val:
-                                        continue
-                                    try:
-                                        val_int = int(val)
-                                        if val_int > max_int:
-                                            max_int = val_int
-                                            max_val = val
-                                    except ValueError:
-                                        if max_val is None:
-                                            max_val = val
-                                if max_val is not None:
-                                    submit_data[name] = max_val
-                            
-                            if submit_btn.get('name'):
-                                submit_data[submit_btn.get('name')] = submit_btn.get('value', '')
-                            
-                            boost_r = self.session.post(submit_action, headers=ajax_headers, data=submit_data)
-                            decoded_boost = decode_zefoy_response(boost_r.text)
-                            result_text = clean_html_text(decoded_boost)
-                            
-                            if not result_text:
-                                result_text = "Boost thành công!"
-                            
-                            runs += 1
-                            results['runs'] = runs
-                            results['message'] = result_text
-                            results['success'] = True
-                            
-                            if runs < max_runs:
-                                time.sleep(10)
-                        else:
-                            results['errors'].append("Không tìm thấy form submit")
-                            break
-                    else:
-                        if 'please wait' in decoded_response.lower() or 'wait' in decoded_response.lower():
-                            total_wait, _ = extract_cooldown_seconds(decoded_response)
-                            if total_wait > 0:
-                                results['errors'].append(f"Đang chờ cooldown: {total_wait}s")
-                                results['message'] = f"Cooldown {total_wait}s"
-                                return results
+                                try:
+                                    val_int = int(val)
+                                    if val_int > max_int:
+                                        max_int = val_int
+                                        max_val = val
+                                except ValueError:
+                                    if max_val is None:
+                                        max_val = val
+                            if max_val is not None:
+                                submit_data[name] = max_val
                         
-                        results['errors'].append("Không tìm thấy nút submit")
+                        actual_btn = target_form.find('button', type='submit') if target_form else submit_btn
+                        if actual_btn and actual_btn.get('name'):
+                            submit_data[actual_btn.get('name')] = actual_btn.get('value', '')
+                        
+                        # Gửi boost - GIỐNG buff.py
+                        boost_r = self.session.post(submit_url, headers=ajax_headers, data=submit_data)
+                        decoded_boost = decode_zefoy_response(boost_r.text)
+                        result_text = clean_html_text(decoded_boost)
+                        
+                        if not result_text:
+                            result_text = "Phản hồi không chứa thông báo văn bản. Hãy kiểm tra lại TikTok."
+                        
+                        runs += 1
+                        results['runs'] = runs
+                        results['message'] = result_text
+                        results['success'] = True
+                        
+                        # Chờ 10 giây - GIỐNG buff.py
+                        if runs < max_runs:
+                            time.sleep(10)
+                    else:
+                        err_text = clean_html_text(decoded_response)
+                        results['errors'].append(f"Không tìm thấy nút Submit: {err_text}")
                         break
                         
                 except Exception as e:
@@ -539,7 +660,8 @@ def _new_session_state(cookie_string: str = "", user_agent: str = "") -> Dict:
         "created": time.time(),
         "last_used": time.time(),
         "total_sent": 0,
-        "services": []
+        "services": [],
+        "captcha_data": None
     }
 
 def _get_session(session_id: str) -> Dict:
@@ -564,6 +686,10 @@ class StartRequest(BaseModel):
     cookie_string: str
     user_agent: Optional[str] = None
 
+class CaptchaRequest(BaseModel):
+    session_id: str
+    captcha_text: str
+
 class SessionRequest(BaseModel):
     session_id: str
 
@@ -574,7 +700,7 @@ class BoostRequest(BaseModel):
     max_runs: int = 10
 
 # ============================================================
-# GIAO DIỆN WEB HTML
+# GIAO DIỆN WEB HTML (CÓ CAPTCHA)
 # ============================================================
 
 HTML_TEMPLATE = """
@@ -694,8 +820,8 @@ HTML_TEMPLATE = """
         
         .status-bar {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
             padding: 12px 15px;
             background: var(--bg-card);
             border-radius: 8px;
@@ -708,34 +834,34 @@ HTML_TEMPLATE = """
             align-items: center;
             padding: 4px 0;
         }
-        .status-item .label { color: var(--text-muted); font-size: 0.85em; }
-        .status-item .value { color: var(--primary); font-weight: bold; font-size: 0.95em; }
+        .status-item .label { color: var(--text-muted); font-size: 0.8em; }
+        .status-item .value { color: var(--primary); font-weight: bold; font-size: 0.9em; }
         .status-item .value.offline { color: var(--danger); }
         .status-item .value.online { color: var(--primary); animation: pulse 1.5s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
         
         .card {
             background: var(--bg-card);
-            padding: 20px;
+            padding: 18px;
             border-radius: 10px;
             border: 1px solid rgba(0,255,80,0.08);
-            margin-bottom: 16px;
+            margin-bottom: 14px;
         }
         .card h3 {
             color: var(--secondary);
             font-family: 'Orbitron', monospace;
-            font-size: 1em;
-            margin-bottom: 15px;
+            font-size: 0.95em;
+            margin-bottom: 12px;
             text-shadow: 0 0 20px rgba(0,229,255,0.2);
         }
         
-        .form-group { margin-bottom: 14px; }
+        .form-group { margin-bottom: 12px; }
         .form-group label {
             display: block;
             color: var(--text-color);
             font-weight: bold;
-            margin-bottom: 5px;
-            font-size: 0.9em;
+            margin-bottom: 4px;
+            font-size: 0.85em;
         }
         .form-group input, .form-group textarea, .form-group select {
             width: 100%;
@@ -753,7 +879,7 @@ HTML_TEMPLATE = """
             border-color: var(--primary);
             box-shadow: 0 0 20px rgba(0,255,80,0.1);
         }
-        .form-group textarea { resize: vertical; min-height: 60px; }
+        .form-group textarea { resize: vertical; min-height: 50px; }
         .form-group select {
             cursor: pointer;
             appearance: none;
@@ -765,7 +891,7 @@ HTML_TEMPLATE = """
         .form-group small {
             display: block;
             color: var(--text-muted);
-            font-size: 0.75em;
+            font-size: 0.7em;
             margin-top: 3px;
         }
         
@@ -776,11 +902,11 @@ HTML_TEMPLATE = """
             margin-top: 8px;
         }
         .btn {
-            padding: 10px 22px;
+            padding: 10px 20px;
             border: none;
             border-radius: 6px;
             font-family: 'Share Tech Mono', monospace;
-            font-size: 0.9em;
+            font-size: 0.85em;
             font-weight: bold;
             cursor: pointer;
             transition: all 0.3s ease;
@@ -797,15 +923,16 @@ HTML_TEMPLATE = """
         .btn-success:hover { box-shadow: 0 0 30px rgba(0,255,80,0.3); }
         .btn-danger { background: var(--danger); color: #fff; }
         .btn-danger:hover { box-shadow: 0 0 30px rgba(255,46,99,0.3); }
+        .btn-warning { background: var(--warning); color: #000; }
         .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none !important; }
         
         .result-box {
-            margin-top: 12px;
-            padding: 12px;
+            margin-top: 10px;
+            padding: 10px;
             border-radius: 6px;
             background: rgba(0,0,0,0.3);
             border: 1px solid rgba(0,255,80,0.1);
-            min-height: 40px;
+            min-height: 35px;
             display: none;
             white-space: pre-wrap;
             word-break: break-all;
@@ -817,27 +944,46 @@ HTML_TEMPLATE = """
         .result-box.info { border-color: var(--secondary); color: var(--secondary); }
         .result-box.warning { border-color: var(--warning); color: var(--warning); }
         
+        .captcha-box {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin: 10px 0;
+        }
+        .captcha-box img {
+            border: 1px solid rgba(0,255,80,0.2);
+            border-radius: 6px;
+            background: #fff;
+            padding: 5px;
+            max-height: 80px;
+        }
+        .captcha-box .captcha-input {
+            flex: 1;
+            min-width: 150px;
+        }
+        
         .services-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 10px;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 8px;
             margin: 10px 0;
         }
         .service-item {
             background: rgba(0,0,0,0.3);
-            padding: 10px;
+            padding: 8px;
             border-radius: 6px;
             border: 1px solid rgba(0,255,80,0.08);
             text-align: center;
         }
-        .service-item .name { font-size: 0.9em; color: var(--text-color); }
-        .service-item .status { font-size: 0.8em; margin-top: 3px; }
+        .service-item .name { font-size: 0.85em; color: var(--text-color); }
+        .service-item .status { font-size: 0.75em; margin-top: 3px; }
         .service-item .status.online { color: var(--primary); }
         .service-item .status.offline { color: var(--danger); }
         
         .progress-box {
-            margin-top: 12px;
-            padding: 12px;
+            margin-top: 10px;
+            padding: 10px;
             background: rgba(0,0,0,0.3);
             border-radius: 6px;
             border: 1px solid rgba(0,255,80,0.1);
@@ -860,18 +1006,18 @@ HTML_TEMPLATE = """
         }
         .progress-text {
             color: var(--text-muted);
-            font-size: 0.85em;
-            margin-top: 6px;
+            font-size: 0.8em;
+            margin-top: 5px;
             text-align: center;
         }
         
         .logs-container {
             background: rgba(0,0,0,0.5);
             border-radius: 6px;
-            padding: 12px;
-            max-height: 300px;
+            padding: 10px;
+            max-height: 250px;
             overflow-y: auto;
-            font-size: 0.8em;
+            font-size: 0.78em;
             border: 1px solid rgba(0,255,80,0.05);
         }
         .logs-container::-webkit-scrollbar { width: 3px; }
@@ -889,31 +1035,32 @@ HTML_TEMPLATE = """
         .log-entry .time { color: var(--text-muted); margin-right: 8px; }
         
         .footer {
-            margin-top: 20px;
-            padding-top: 15px;
+            margin-top: 18px;
+            padding-top: 12px;
             border-top: 1px solid rgba(0,255,80,0.08);
             text-align: center;
             color: var(--text-muted);
-            font-size: 0.75em;
+            font-size: 0.7em;
             display: flex;
             justify-content: center;
-            gap: 12px;
+            gap: 10px;
             flex-wrap: wrap;
         }
         .footer strong { color: var(--primary); }
         
         .row { display: flex; gap: 8px; flex-wrap: wrap; }
-        .row > * { flex: 1; min-width: 150px; }
+        .row > * { flex: 1; min-width: 120px; }
         
         @media (max-width: 600px) {
-            .container { margin: 10px; padding: 15px; }
-            .glitch { font-size: 1.8em; }
-            .status-bar { grid-template-columns: 1fr; gap: 5px; }
+            .container { margin: 8px; padding: 12px; }
+            .glitch { font-size: 1.6em; }
+            .status-bar { grid-template-columns: 1fr; gap: 3px; }
             .btn-group { flex-direction: column; }
             .btn { width: 100%; text-align: center; }
             .services-grid { grid-template-columns: 1fr; }
             .row { flex-direction: column; }
             .row > * { min-width: unset; }
+            .captcha-box { flex-direction: column; }
         }
     </style>
 </head>
@@ -942,9 +1089,9 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- CẤU HÌNH -->
+        <!-- CẤU HÌNH + CAPTCHA -->
         <div class="card">
-            <h3>🔑 Cookie & User-Agent</h3>
+            <h3>🔑 Cookie & Captcha</h3>
             <div class="form-group">
                 <label>🍪 Cookie String</label>
                 <textarea id="cookieInput" placeholder="PHPSESSID=xxx; cf_clearance=xxx; ..." rows="3"></textarea>
@@ -955,6 +1102,19 @@ HTML_TEMPLATE = """
                 <input type="text" id="uaInput" placeholder="Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...">
                 <small>Để trống dùng User-Agent mặc định</small>
             </div>
+            
+            <!-- CAPTCHA -->
+            <div id="captchaSection" style="display:none;">
+                <div class="captcha-box">
+                    <img id="captchaImg" alt="Captcha" style="display:none;">
+                    <div class="captcha-input">
+                        <input type="text" id="captchaInput" placeholder="Nhập mã captcha...">
+                    </div>
+                    <button class="btn btn-warning" onclick="submitCaptcha()">✔ Xác nhận</button>
+                    <button class="btn btn-secondary" onclick="refreshCaptcha()">🔄 Làm mới</button>
+                </div>
+            </div>
+            
             <div class="btn-group">
                 <button class="btn btn-primary" onclick="startSession()">🚀 Khởi tạo</button>
                 <button class="btn btn-secondary" onclick="loadServices()">📋 Lấy dịch vụ</button>
@@ -966,7 +1126,7 @@ HTML_TEMPLATE = """
         <div class="card" id="servicesCard" style="display:none;">
             <h3>📋 Danh sách dịch vụ</h3>
             <div id="servicesContainer">
-                <div style="color:var(--text-muted);text-align:center;padding:10px;">
+                <div style="color:var(--text-muted);text-align:center;padding:8px;">
                     Chưa có dữ liệu
                 </div>
             </div>
@@ -1052,6 +1212,7 @@ HTML_TEMPLATE = """
         let SESSION_ID = null;
         let isRunning = false;
         let totalRuns = 0;
+        let needCaptcha = false;
 
         const $ = id => document.getElementById(id);
         const cookieInput = $('cookieInput');
@@ -1071,6 +1232,9 @@ HTML_TEMPLATE = """
         const servicesContainer = $('servicesContainer');
         const servicesCard = $('servicesCard');
         const boostCard = $('boostCard');
+        const captchaSection = $('captchaSection');
+        const captchaImg = $('captchaImg');
+        const captchaInput = $('captchaInput');
 
         // ===== LOGS =====
         function addLog(message, type = 'system') {
@@ -1107,11 +1271,10 @@ HTML_TEMPLATE = """
         // ===== RENDER SERVICES =====
         function renderServices(services) {
             if (!services || services.length === 0) {
-                servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:10px;">Không có dịch vụ nào</div>';
+                servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px;">Không có dịch vụ nào</div>';
                 return;
             }
             
-            // Cập nhật select
             serviceSelect.innerHTML = '<option value="">-- Chọn dịch vụ --</option>';
             let html = '<div class="services-grid">';
             services.forEach(s => {
@@ -1122,7 +1285,6 @@ HTML_TEMPLATE = """
                 html += '<div class="status ' + statusClass + '">' + statusText + ' (' + s.status + ')</div>';
                 html += '</div>';
                 
-                // Thêm vào select
                 if (s.active) {
                     const opt = document.createElement('option');
                     opt.value = s.name;
@@ -1137,6 +1299,24 @@ HTML_TEMPLATE = """
             boostCard.style.display = 'block';
         }
 
+        // ===== CAPTCHA =====
+        function showCaptcha(captchaB64) {
+            captchaSection.style.display = 'block';
+            captchaImg.style.display = 'block';
+            captchaImg.src = 'data:image/png;base64,' + captchaB64;
+            captchaInput.value = '';
+            captchaInput.focus();
+            needCaptcha = true;
+            addLog('📷 Đã tải captcha, nhập mã để xác nhận', 'warning');
+            showResult(resultBox, '📷 Vui lòng nhập mã captcha trong ảnh', 'warning');
+        }
+
+        function hideCaptcha() {
+            captchaSection.style.display = 'none';
+            captchaImg.style.display = 'none';
+            needCaptcha = false;
+        }
+
         // ===== API CALLS =====
         async function startSession() {
             const cookie = cookieInput.value.trim();
@@ -1147,6 +1327,7 @@ HTML_TEMPLATE = """
             
             showResult(resultBox, '⏳ Đang khởi tạo session...', 'info');
             addLog('⏳ Đang khởi tạo session...', 'system');
+            hideCaptcha();
             
             try {
                 const res = await fetch('/api/start', {
@@ -1161,6 +1342,15 @@ HTML_TEMPLATE = """
                 
                 if (data.success) {
                     SESSION_ID = data.session_id;
+                    
+                    // Kiểm tra có captcha không
+                    if (data.captcha_required && data.captcha_b64) {
+                        showCaptcha(data.captcha_b64);
+                        showResult(resultBox, '📷 Cần nhập captcha để xác thực', 'warning');
+                        addLog('📷 Captcha required', 'warning');
+                        return;
+                    }
+                    
                     updateStatus(true, data.services ? data.services.length : 0);
                     showResult(resultBox, '✅ Session khởi tạo thành công!', 'success');
                     addLog('✅ Session ID: ' + SESSION_ID.slice(0, 16) + '...', 'success');
@@ -1168,9 +1358,11 @@ HTML_TEMPLATE = """
                     if (data.services && data.services.length > 0) {
                         renderServices(data.services);
                         addLog('📋 Đã tải ' + data.services.length + ' dịch vụ', 'system');
-                    } else {
-                        addLog('⚠️ Không tìm thấy dịch vụ nào', 'warning');
                     }
+                    
+                    localStorage.setItem('zefoy_cookie', cookie);
+                    localStorage.setItem('zefoy_ua', uaInput.value.trim());
+                    
                 } else {
                     showResult(resultBox, '❌ ' + (data.detail || 'Lỗi không xác định'), 'error');
                     addLog('❌ Lỗi: ' + (data.detail || 'Không xác định'), 'error');
@@ -1180,6 +1372,89 @@ HTML_TEMPLATE = """
                 addLog('❌ Lỗi: ' + e.message, 'error');
             }
         }
+
+        async function submitCaptcha() {
+            const captchaText = captchaInput.value.trim();
+            if (!captchaText) {
+                showResult(resultBox, '⚠️ Vui lòng nhập mã captcha!', 'error');
+                return;
+            }
+            
+            if (!SESSION_ID) {
+                showResult(resultBox, '⚠️ Vui lòng khởi tạo session trước!', 'error');
+                return;
+            }
+            
+            showResult(resultBox, '⏳ Đang xác thực captcha...', 'info');
+            addLog('⏳ Đang gửi captcha: ' + captchaText, 'system');
+            
+            try {
+                const res = await fetch('/api/captcha', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: SESSION_ID,
+                        captcha_text: captchaText
+                    })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    hideCaptcha();
+                    updateStatus(true, data.services ? data.services.length : 0);
+                    showResult(resultBox, '✅ Captcha đúng! Đã đăng nhập thành công.', 'success');
+                    addLog('✅ Captcha OK, đã đăng nhập', 'success');
+                    
+                    if (data.services && data.services.length > 0) {
+                        renderServices(data.services);
+                        addLog('📋 Đã tải ' + data.services.length + ' dịch vụ', 'system');
+                    }
+                } else {
+                    showResult(resultBox, '❌ Captcha sai! Vui lòng thử lại.', 'error');
+                    addLog('❌ Captcha sai', 'error');
+                    
+                    // Lấy captcha mới
+                    refreshCaptcha();
+                }
+            } catch (e) {
+                showResult(resultBox, '❌ Lỗi: ' + e.message, 'error');
+                addLog('❌ Lỗi: ' + e.message, 'error');
+            }
+        }
+
+        async function refreshCaptcha() {
+            if (!SESSION_ID) {
+                showResult(resultBox, '⚠️ Vui lòng khởi tạo session trước!', 'error');
+                return;
+            }
+            
+            showResult(resultBox, '⏳ Đang lấy captcha mới...', 'info');
+            
+            try {
+                const res = await fetch('/api/refresh_captcha', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: SESSION_ID })
+                });
+                const data = await res.json();
+                
+                if (data.captcha_b64) {
+                    showCaptcha(data.captcha_b64);
+                    showResult(resultBox, '📷 Captcha mới đã tải, nhập mã', 'warning');
+                    addLog('📷 Đã làm mới captcha', 'system');
+                } else {
+                    showResult(resultBox, '❌ Không thể tải captcha mới', 'error');
+                }
+            } catch (e) {
+                showResult(resultBox, '❌ Lỗi: ' + e.message, 'error');
+                addLog('❌ Lỗi: ' + e.message, 'error');
+            }
+        }
+
+        // Enter để submit captcha
+        captchaInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submitCaptcha();
+        });
 
         async function loadServices() {
             if (!SESSION_ID) {
@@ -1303,7 +1578,7 @@ HTML_TEMPLATE = """
             showResult(boostResult, '⏹️ Đã dừng boost', 'warning');
         }
 
-        // ===== LOAD CONFIG FROM LOCALSTORAGE =====
+        // ===== LOAD CONFIG =====
         window.onload = function() {
             const savedCookie = localStorage.getItem('zefoy_cookie');
             const savedUA = localStorage.getItem('zefoy_ua');
@@ -1312,14 +1587,6 @@ HTML_TEMPLATE = """
                 addLog('📂 Đã tải cookie từ localStorage', 'system');
             }
             if (savedUA) uaInput.value = savedUA;
-        };
-        
-        // Save config when starting session
-        const origStart = startSession;
-        startSession = async function() {
-            localStorage.setItem('zefoy_cookie', cookieInput.value.trim());
-            localStorage.setItem('zefoy_ua', uaInput.value.trim());
-            await origStart();
         };
     </script>
 </body>
@@ -1343,6 +1610,8 @@ async def api_info():
         "status": "online",
         "endpoints": [
             "/api/start",
+            "/api/captcha",
+            "/api/refresh_captcha",
             "/api/services",
             "/api/boost",
             "/api/status"
@@ -1358,22 +1627,86 @@ async def start_session(req: StartRequest):
     st = _new_session_state(req.cookie_string, req.user_agent)
     bot: ZefoyBot = st["bot"]
     
-    if not bot.authenticate():
-        raise HTTPException(401, "Cookie không hợp lệ hoặc đã hết hạn")
+    # Kiểm tra auth
+    if bot.authenticate():
+        # Đã đăng nhập, lấy services
+        services = bot.get_services_list()
+        st["services"] = services
+        SESSIONS[session_id] = st
+        return {
+            "session_id": session_id,
+            "success": True,
+            "services": [
+                {"name": s["name"], "active": s["active"], "status": s["status"]}
+                for s in services
+            ]
+        }
     
-    services = bot.get_services_list()
-    st["services"] = services
+    # Chưa đăng nhập, cần captcha
+    captcha_data = bot.get_captcha()
+    if captcha_data and not captcha_data.get('solved'):
+        st["captcha_data"] = captcha_data
+        SESSIONS[session_id] = st
+        return {
+            "session_id": session_id,
+            "success": False,
+            "captcha_required": True,
+            "captcha_b64": captcha_data.get('captcha_b64'),
+            "message": "Cần nhập captcha để xác thực"
+        }
     
-    SESSIONS[session_id] = st
+    # Không lấy được captcha
+    raise HTTPException(500, "Không thể lấy captcha. Vui lòng thử lại sau.")
+
+@app.post("/api/captcha")
+async def submit_captcha(req: CaptchaRequest):
+    st = _get_session(req.session_id)
+    bot: ZefoyBot = st["bot"]
     
-    return {
-        "session_id": session_id,
-        "success": True,
-        "services": [
-            {"name": s["name"], "active": s["active"], "status": s["status"]}
-            for s in services
-        ]
-    }
+    if not req.captcha_text:
+        raise HTTPException(400, "captcha_text không được để trống")
+    
+    # Gửi captcha
+    if bot.submit_captcha(req.captcha_text):
+        # Captcha đúng, lấy services
+        services = bot.get_services_list()
+        st["services"] = services
+        return {
+            "success": True,
+            "services": [
+                {"name": s["name"], "active": s["active"], "status": s["status"]}
+                for s in services
+            ]
+        }
+    else:
+        # Captcha sai, lấy captcha mới
+        captcha_data = bot.get_captcha()
+        if captcha_data and not captcha_data.get('solved'):
+            st["captcha_data"] = captcha_data
+            return {
+                "success": False,
+                "message": "Captcha sai, vui lòng thử lại",
+                "captcha_b64": captcha_data.get('captcha_b64')
+            }
+        return {
+            "success": False,
+            "message": "Captcha sai, vui lòng thử lại"
+        }
+
+@app.post("/api/refresh_captcha")
+async def refresh_captcha(req: SessionRequest):
+    st = _get_session(req.session_id)
+    bot: ZefoyBot = st["bot"]
+    
+    captcha_data = bot.get_captcha()
+    if captcha_data and not captcha_data.get('solved'):
+        st["captcha_data"] = captcha_data
+        return {
+            "captcha_b64": captcha_data.get('captcha_b64'),
+            "message": "Captcha mới đã tải"
+        }
+    
+    return {"message": "Không cần captcha hoặc đã đăng nhập"}
 
 @app.post("/api/services")
 async def get_services(req: SessionRequest):
@@ -1396,6 +1729,7 @@ async def boost(req: BoostRequest):
     st = _get_session(req.session_id)
     bot: ZefoyBot = st["bot"]
     
+    # Kiểm tra auth
     if not bot.authenticate():
         raise HTTPException(401, "Session đã hết hạn. Vui lòng tạo session mới.")
     
