@@ -1,8 +1,8 @@
 """
-Zefoy Web API + Giao diện Web - FastAPI
-- Logic buff: 100% từ buff.py gốc
-- Session + Captcha: từ source code cũ
-- Giao diện web: hacker style
+Zefoy Web API - Merge buff.py + source cũ
+- Logic boost: từ buff.py
+- Captcha + session: từ source cũ (không cần nhập cookie)
+- OCR tự động giải captcha
 """
 
 from __future__ import annotations
@@ -16,9 +16,7 @@ import json
 import base64
 import uuid
 import urllib.parse
-import subprocess
 from typing import Any, Optional, Dict, List
-from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,7 +71,7 @@ async def http_exception_handler(request: Request, exc: FastAPIHTTPException):
     )
 
 # ============================================================
-# LOGIC TỪ buff.py GỐC (GIỮ NGUYÊN 100%)
+# LOGIC TỪ SOURCE CŨ (Captcha + Session)
 # ============================================================
 
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -89,7 +87,7 @@ def parse_cookie_string(cookie_str: str) -> Dict[str, str]:
     return cookies
 
 def decode_zefoy_response(text: str) -> str:
-    """GIỐNG HỆT buff.py decode"""
+    """GIỐNG buff.py decode"""
     text = text.strip()
     if not text:
         return text
@@ -135,7 +133,7 @@ def clean_html_text(html_content: str) -> str:
     return soup.get_text(separator=' ').strip()
 
 def extract_cooldown_seconds(decoded_response: str) -> tuple:
-    """GIỐNG HỆT buff.py extract_cooldown_seconds"""
+    """GIỐNG buff.py extract_cooldown_seconds"""
     soup = BeautifulSoup(decoded_response, 'html.parser')
     
     countdown_tag = soup.find(id='login-countdown') or soup.find(class_=re.compile(r'countdown'))
@@ -254,9 +252,71 @@ def solve_captcha(session: requests.Session, captcha_text: str) -> bool:
         logger.error(f"Lỗi giải captcha: {e}")
         return False
 
-# ===== LẤY DỊCH VỤ - FIX LAYOUT MỚI =====
+# ============================================================
+# OCR TỰ ĐỘNG (dùng newocr.com)
+# ============================================================
+
+def ocr_captcha(image_bytes: bytes) -> str:
+    """OCR ảnh captcha tự động - dùng newocr.com"""
+    try:
+        # Gửi ảnh lên newocr.com
+        files = {'userfile': ('captcha.png', image_bytes, 'image/png')}
+        data = {'preview': '1'}
+        
+        # Tạo session riêng cho OCR
+        ocr_session = requests.Session()
+        ocr_session.headers.update({
+            'User-Agent': DEFAULT_USER_AGENT,
+            'Referer': 'https://www.newocr.com/',
+        })
+        
+        # Bước 1: Upload ảnh
+        resp = ocr_session.post('https://www.newocr.com/', data=data, files=files, timeout=30)
+        html_content = resp.text
+        
+        # Lấy file_id
+        file_id_match = re.search(r'name="u"\s+value="([a-f0-9]{32})"', html_content)
+        if not file_id_match:
+            # Thử cách khác
+            file_id_match = re.search(r'name="u"[^>]*value="([^"]+)"', html_content)
+        if not file_id_match:
+            return ""
+        
+        file_id = file_id_match.group(1)
+        
+        # Bước 2: Gửi OCR
+        ocr_data = {
+            'u': file_id,
+            'l2[]': 'eng',
+            'psm': '6',
+            'r': '0',
+            'x1': '0',
+            'y1': '0',
+            'x2': '100',
+            'y2': '100',
+            'ocr': '1'
+        }
+        resp = ocr_session.post('https://www.newocr.com/', data=ocr_data, timeout=30)
+        
+        # Lấy kết quả
+        result_match = re.search(r'<textarea[^>]*id="ocr-result"[^>]*>([\s\S]*?)</textarea>', resp.text, re.I)
+        if result_match:
+            text = result_match.group(1).strip()
+            # Chỉ lấy chữ cái
+            text = re.sub(r'[^a-zA-Z]', '', text).lower()
+            return text
+        
+        return ""
+    except Exception as e:
+        logger.error(f"OCR error: {e}")
+        return ""
+
+# ============================================================
+# LOGIC TỪ buff.py (Lấy service + Boost)
+# ============================================================
+
 def get_services(session: requests.Session) -> tuple:
-    """Lấy danh sách dịch vụ - FIX cho layout mới của Zefoy"""
+    """Lấy danh sách dịch vụ - FIX cho layout mới"""
     try:
         r = session.get('https://zefoy.com/')
         html_content = decode_zefoy_response(r.text)
@@ -430,19 +490,15 @@ def extract_form_data(form) -> Optional[Dict]:
 # ============================================================
 
 class ZefoyBot:
-    def __init__(self, cookie_string: str, user_agent: str = None):
-        self.cookie_string = cookie_string
+    def __init__(self, session: requests.Session = None, user_agent: str = None):
         self.user_agent = user_agent or DEFAULT_USER_AGENT
-        self.session = self._setup_session()
+        self.session = session or self._setup_session()
         self.services = []
         self.home_html = ""
         self.captcha_solved = False
         
     def _setup_session(self) -> requests.Session:
         session = requests.Session()
-        cookies = parse_cookie_string(self.cookie_string)
-        session.cookies.update(cookies)
-        
         session.headers.update({
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'accept-language': 'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.7',
@@ -476,6 +532,7 @@ class ZefoyBot:
             return {
                 'solved': False,
                 'captcha_b64': img_b64,
+                'image_bytes': img_resp.content,
                 'form_data': form_data,
                 'message': 'Vui lòng nhập mã captcha'
             }
@@ -489,6 +546,29 @@ class ZefoyBot:
         if result:
             self.captcha_solved = True
         return result
+    
+    def auto_solve_captcha(self) -> bool:
+        """Tự động giải captcha bằng OCR"""
+        captcha_data = self.get_captcha()
+        if not captcha_data:
+            return False
+        
+        if captcha_data.get('solved'):
+            return True
+        
+        image_bytes = captcha_data.get('image_bytes')
+        if not image_bytes:
+            return False
+        
+        # OCR
+        logger.info("Đang OCR captcha...")
+        captcha_text = ocr_captcha(image_bytes)
+        if not captcha_text:
+            logger.warning("OCR không đọc được captcha")
+            return False
+        
+        logger.info(f"OCR kết quả: {captcha_text}")
+        return self.submit_captcha(captcha_text)
     
     def authenticate(self) -> bool:
         """Kiểm tra đăng nhập - GIỐNG buff.py"""
@@ -679,15 +759,15 @@ class ZefoyBot:
         return results
 
 # ============================================================
-# SESSION STORE (TỪ SOURCE CŨ)
+# SESSION STORE
 # ============================================================
 
 SESSIONS: Dict[str, Dict] = {}
 SESSION_TTL = 60 * 30
 
-def _new_session_state(cookie_string: str = "", user_agent: str = "") -> Dict:
+def _new_session_state() -> Dict:
     return {
-        "bot": ZefoyBot(cookie_string, user_agent or DEFAULT_USER_AGENT),
+        "bot": ZefoyBot(),
         "created": time.time(),
         "last_used": time.time(),
         "total_sent": 0,
@@ -712,14 +792,6 @@ def _gc():
 # ============================================================
 # PYDANTIC MODELS
 # ============================================================
-
-class StartRequest(BaseModel):
-    cookie_string: str
-    user_agent: Optional[str] = None
-
-class CaptchaRequest(BaseModel):
-    session_id: str
-    captcha_text: str
 
 class SessionRequest(BaseModel):
     session_id: str
@@ -975,25 +1047,6 @@ HTML_TEMPLATE = """
         .result-box.info { border-color: var(--secondary); color: var(--secondary); }
         .result-box.warning { border-color: var(--warning); color: var(--warning); }
         
-        .captcha-box {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            flex-wrap: wrap;
-            margin: 10px 0;
-        }
-        .captcha-box img {
-            border: 1px solid rgba(0,255,80,0.2);
-            border-radius: 6px;
-            background: #fff;
-            padding: 5px;
-            max-height: 80px;
-        }
-        .captcha-box .captcha-input {
-            flex: 1;
-            min-width: 150px;
-        }
-        
         .services-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -1091,7 +1144,6 @@ HTML_TEMPLATE = """
             .services-grid { grid-template-columns: 1fr; }
             .row { flex-direction: column; }
             .row > * { min-width: unset; }
-            .captcha-box { flex-direction: column; }
         }
     </style>
 </head>
@@ -1120,32 +1172,12 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <!-- CẤU HÌNH + CAPTCHA -->
+        <!-- KHỞI TẠO -->
         <div class="card">
-            <h3>🔑 Cookie & Captcha</h3>
-            <div class="form-group">
-                <label>🍪 Cookie String</label>
-                <textarea id="cookieInput" placeholder="PHPSESSID=xxx; cf_clearance=xxx; ..." rows="3"></textarea>
-                <small>Lấy cookie từ trình duyệt sau khi đăng nhập zefoy.com</small>
-            </div>
-            <div class="form-group">
-                <label>🖥️ User-Agent</label>
-                <input type="text" id="uaInput" placeholder="Mozilla/5.0 (Windows NT 10.0; Win64; x64) ...">
-                <small>Để trống dùng User-Agent mặc định</small>
-            </div>
-            
-            <!-- CAPTCHA -->
-            <div id="captchaSection" style="display:none;">
-                <div class="captcha-box">
-                    <img id="captchaImg" alt="Captcha" style="display:none;">
-                    <div class="captcha-input">
-                        <input type="text" id="captchaInput" placeholder="Nhập mã captcha...">
-                    </div>
-                    <button class="btn btn-warning" onclick="submitCaptcha()">✔ Xác nhận</button>
-                    <button class="btn btn-secondary" onclick="refreshCaptcha()">🔄 Làm mới</button>
-                </div>
-            </div>
-            
+            <h3>🚀 Khởi tạo Session (Tự động captcha)</h3>
+            <p style="color:var(--text-muted);font-size:0.85em;margin-bottom:12px;">
+                Không cần nhập Cookie hay User-Agent. Hệ thống tự động lấy captcha và giải bằng OCR.
+            </p>
             <div class="btn-group">
                 <button class="btn btn-primary" onclick="startSession()">🚀 Khởi tạo</button>
                 <button class="btn btn-secondary" onclick="loadServices()">📋 Lấy dịch vụ</button>
@@ -1198,7 +1230,7 @@ HTML_TEMPLATE = """
             <h3>📊 Logs System</h3>
             <div class="logs-container" id="logsContainer">
                 <div class="log-entry system"><span class="time">[SYSTEM]</span> 🔮 Zefoy Bot v3.0.3 đã sẵn sàng</div>
-                <div class="log-entry system"><span class="time">[SYSTEM]</span> 👋 Nhập Cookie và bấm "Khởi tạo"</div>
+                <div class="log-entry system"><span class="time">[SYSTEM]</span> 👋 Bấm "Khởi tạo" để bắt đầu</div>
             </div>
         </div>
 
@@ -1243,11 +1275,8 @@ HTML_TEMPLATE = """
         let SESSION_ID = null;
         let isRunning = false;
         let totalRuns = 0;
-        let needCaptcha = false;
 
         const $ = id => document.getElementById(id);
-        const cookieInput = $('cookieInput');
-        const uaInput = $('uaInput');
         const videoUrl = $('videoUrl');
         const serviceSelect = $('serviceSelect');
         const maxRuns = $('maxRuns');
@@ -1263,9 +1292,6 @@ HTML_TEMPLATE = """
         const servicesContainer = $('servicesContainer');
         const servicesCard = $('servicesCard');
         const boostCard = $('boostCard');
-        const captchaSection = $('captchaSection');
-        const captchaImg = $('captchaImg');
-        const captchaInput = $('captchaInput');
 
         // ===== LOGS =====
         function addLog(message, type = 'system') {
@@ -1330,69 +1356,29 @@ HTML_TEMPLATE = """
             boostCard.style.display = 'block';
         }
 
-        // ===== CAPTCHA =====
-        function showCaptcha(captchaB64) {
-            captchaSection.style.display = 'block';
-            captchaImg.style.display = 'block';
-            captchaImg.src = 'data:image/png;base64,' + captchaB64;
-            captchaInput.value = '';
-            captchaInput.focus();
-            needCaptcha = true;
-            addLog('📷 Đã tải captcha, nhập mã để xác nhận', 'warning');
-            showResult(resultBox, '📷 Vui lòng nhập mã captcha trong ảnh', 'warning');
-        }
-
-        function hideCaptcha() {
-            captchaSection.style.display = 'none';
-            captchaImg.style.display = 'none';
-            needCaptcha = false;
-        }
-
         // ===== API CALLS =====
         async function startSession() {
-            const cookie = cookieInput.value.trim();
-            if (!cookie) {
-                showResult(resultBox, '⚠️ Vui lòng nhập Cookie String!', 'error');
-                return;
-            }
-            
-            showResult(resultBox, '⏳ Đang khởi tạo session...', 'info');
+            showResult(resultBox, '⏳ Đang khởi tạo session + tự động giải captcha...', 'info');
             addLog('⏳ Đang khởi tạo session...', 'system');
-            hideCaptcha();
             
             try {
                 const res = await fetch('/api/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        cookie_string: cookie,
-                        user_agent: uaInput.value.trim()
-                    })
+                    body: JSON.stringify({})
                 });
                 const data = await res.json();
                 
                 if (data.success) {
                     SESSION_ID = data.session_id;
-                    
-                    if (data.captcha_required && data.captcha_b64) {
-                        showCaptcha(data.captcha_b64);
-                        showResult(resultBox, '📷 Cần nhập captcha để xác thực', 'warning');
-                        addLog('📷 Captcha required', 'warning');
-                        return;
-                    }
-                    
                     updateStatus(true, data.services ? data.services.length : 0);
-                    showResult(resultBox, '✅ Session khởi tạo thành công!', 'success');
+                    showResult(resultBox, '✅ Session khởi tạo thành công! Captcha tự động giải.', 'success');
                     addLog('✅ Session ID: ' + SESSION_ID.slice(0, 16) + '...', 'success');
                     
                     if (data.services && data.services.length > 0) {
                         renderServices(data.services);
                         addLog('📋 Đã tải ' + data.services.length + ' dịch vụ', 'system');
                     }
-                    
-                    localStorage.setItem('zefoy_cookie', cookie);
-                    localStorage.setItem('zefoy_ua', uaInput.value.trim());
-                    
                 } else {
                     showResult(resultBox, '❌ ' + (data.message || data.detail || 'Lỗi không xác định'), 'error');
                     addLog('❌ Lỗi: ' + (data.message || data.detail || 'Không xác định'), 'error');
@@ -1402,87 +1388,6 @@ HTML_TEMPLATE = """
                 addLog('❌ Lỗi: ' + e.message, 'error');
             }
         }
-
-        async function submitCaptcha() {
-            const captchaText = captchaInput.value.trim();
-            if (!captchaText) {
-                showResult(resultBox, '⚠️ Vui lòng nhập mã captcha!', 'error');
-                return;
-            }
-            
-            if (!SESSION_ID) {
-                showResult(resultBox, '⚠️ Vui lòng khởi tạo session trước!', 'error');
-                return;
-            }
-            
-            showResult(resultBox, '⏳ Đang xác thực captcha...', 'info');
-            addLog('⏳ Đang gửi captcha: ' + captchaText, 'system');
-            
-            try {
-                const res = await fetch('/api/captcha', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        session_id: SESSION_ID,
-                        captcha_text: captchaText
-                    })
-                });
-                const data = await res.json();
-                
-                if (data.success) {
-                    hideCaptcha();
-                    updateStatus(true, data.services ? data.services.length : 0);
-                    showResult(resultBox, '✅ Captcha đúng! Đã đăng nhập thành công.', 'success');
-                    addLog('✅ Captcha OK, đã đăng nhập', 'success');
-                    
-                    if (data.services && data.services.length > 0) {
-                        renderServices(data.services);
-                        addLog('📋 Đã tải ' + data.services.length + ' dịch vụ', 'system');
-                    }
-                } else {
-                    showResult(resultBox, '❌ Captcha sai! Vui lòng thử lại.', 'error');
-                    addLog('❌ Captcha sai', 'error');
-                    refreshCaptcha();
-                }
-            } catch (e) {
-                showResult(resultBox, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi: ' + e.message, 'error');
-            }
-        }
-
-        async function refreshCaptcha() {
-            if (!SESSION_ID) {
-                showResult(resultBox, '⚠️ Vui lòng khởi tạo session trước!', 'error');
-                return;
-            }
-            
-            showResult(resultBox, '⏳ Đang lấy captcha mới...', 'info');
-            
-            try {
-                const res = await fetch('/api/refresh_captcha', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ session_id: SESSION_ID })
-                });
-                const data = await res.json();
-                
-                if (data.captcha_b64) {
-                    showCaptcha(data.captcha_b64);
-                    showResult(resultBox, '📷 Captcha mới đã tải, nhập mã', 'warning');
-                    addLog('📷 Đã làm mới captcha', 'system');
-                } else {
-                    showResult(resultBox, '❌ Không thể tải captcha mới', 'error');
-                }
-            } catch (e) {
-                showResult(resultBox, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi: ' + e.message, 'error');
-            }
-        }
-
-        // Enter để submit captcha
-        captchaInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') submitCaptcha();
-        });
 
         async function loadServices() {
             if (!SESSION_ID) {
@@ -1605,17 +1510,6 @@ HTML_TEMPLATE = """
             addLog('⏹️ Đã dừng boost', 'warning');
             showResult(boostResult, '⏹️ Đã dừng boost', 'warning');
         }
-
-        // ===== LOAD CONFIG =====
-        window.onload = function() {
-            const savedCookie = localStorage.getItem('zefoy_cookie');
-            const savedUA = localStorage.getItem('zefoy_ua');
-            if (savedCookie) {
-                cookieInput.value = savedCookie;
-                addLog('📂 Đã tải cookie từ localStorage', 'system');
-            }
-            if (savedUA) uaInput.value = savedUA;
-        };
     </script>
 </body>
 </html>
@@ -1637,8 +1531,6 @@ async def api_info():
         "status": "online",
         "endpoints": [
             "/api/start",
-            "/api/captcha",
-            "/api/refresh_captcha",
             "/api/services",
             "/api/boost",
             "/api/status"
@@ -1646,89 +1538,42 @@ async def api_info():
     }
 
 @app.post("/api/start")
-async def start_session(req: StartRequest):
-    if not req.cookie_string:
-        raise HTTPException(400, "cookie_string không được để trống")
-    
+async def start_session():
+    """Khởi tạo session mới - tự động giải captcha bằng OCR"""
     session_id = uuid.uuid4().hex
-    st = _new_session_state(req.cookie_string, req.user_agent)
-    bot: ZefoyBot = st["bot"]
+    bot = ZefoyBot()
     
-    # Kiểm tra auth - từ buff.py
-    if bot.authenticate():
-        services = bot.get_services_list()
-        st["services"] = services
-        SESSIONS[session_id] = st
-        return {
-            "session_id": session_id,
-            "success": True,
-            "services": [
-                {"name": s["name"], "active": s["active"], "status": s["status"]}
-                for s in services
-            ]
-        }
+    # Thử authenticate - nếu chưa login thì tự động giải captcha
+    if not bot.authenticate():
+        # Tự động giải captcha
+        logger.info("Đang tự động giải captcha...")
+        if not bot.auto_solve_captcha():
+            raise HTTPException(500, "Không thể giải captcha tự động. Vui lòng thử lại.")
+        
+        # Kiểm tra lại
+        if not bot.authenticate():
+            raise HTTPException(500, "Captcha giải nhưng không đăng nhập được. Vui lòng thử lại.")
     
-    # Chưa đăng nhập, cần captcha - từ source cũ
-    captcha_data = bot.get_captcha()
-    if captcha_data and not captcha_data.get('solved'):
-        st["captcha_data"] = captcha_data
-        SESSIONS[session_id] = st
-        return {
-            "session_id": session_id,
-            "success": False,
-            "captcha_required": True,
-            "captcha_b64": captcha_data.get('captcha_b64'),
-            "message": "Cần nhập captcha để xác thực"
-        }
+    # Lấy services
+    services = bot.get_services_list()
     
-    raise HTTPException(500, "Không thể lấy captcha. Vui lòng thử lại sau.")
-
-@app.post("/api/captcha")
-async def submit_captcha(req: CaptchaRequest):
-    st = _get_session(req.session_id)
-    bot: ZefoyBot = st["bot"]
+    # Lưu session
+    SESSIONS[session_id] = {
+        "bot": bot,
+        "created": time.time(),
+        "last_used": time.time(),
+        "total_sent": 0,
+        "services": services
+    }
     
-    if not req.captcha_text:
-        raise HTTPException(400, "captcha_text không được để trống")
-    
-    if bot.submit_captcha(req.captcha_text):
-        services = bot.get_services_list()
-        st["services"] = services
-        return {
-            "success": True,
-            "services": [
-                {"name": s["name"], "active": s["active"], "status": s["status"]}
-                for s in services
-            ]
-        }
-    else:
-        captcha_data = bot.get_captcha()
-        if captcha_data and not captcha_data.get('solved'):
-            st["captcha_data"] = captcha_data
-            return {
-                "success": False,
-                "message": "Captcha sai, vui lòng thử lại",
-                "captcha_b64": captcha_data.get('captcha_b64')
-            }
-        return {
-            "success": False,
-            "message": "Captcha sai, vui lòng thử lại"
-        }
-
-@app.post("/api/refresh_captcha")
-async def refresh_captcha(req: SessionRequest):
-    st = _get_session(req.session_id)
-    bot: ZefoyBot = st["bot"]
-    
-    captcha_data = bot.get_captcha()
-    if captcha_data and not captcha_data.get('solved'):
-        st["captcha_data"] = captcha_data
-        return {
-            "captcha_b64": captcha_data.get('captcha_b64'),
-            "message": "Captcha mới đã tải"
-        }
-    
-    return {"message": "Không cần captcha hoặc đã đăng nhập"}
+    return {
+        "session_id": session_id,
+        "success": True,
+        "services": [
+            {"name": s["name"], "active": s["active"], "status": s["status"]}
+            for s in services
+        ]
+    }
 
 @app.post("/api/services")
 async def get_services(req: SessionRequest):
@@ -1751,9 +1596,13 @@ async def boost(req: BoostRequest):
     st = _get_session(req.session_id)
     bot: ZefoyBot = st["bot"]
     
-    # Kiểm tra auth trước khi boost - từ buff.py
+    # Kiểm tra auth - nếu hết hạn thì auto login lại
     if not bot.authenticate():
-        raise HTTPException(401, "Session đã hết hạn. Vui lòng tạo session mới.")
+        logger.info("Session hết hạn, đang tự động login lại...")
+        if bot.auto_solve_captcha():
+            bot.authenticate()
+        else:
+            raise HTTPException(401, "Session hết hạn và không thể tự động đăng nhập lại.")
     
     result = bot.boost(req.video_url, req.service, req.max_runs)
     
