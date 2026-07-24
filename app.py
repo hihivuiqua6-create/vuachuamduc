@@ -1,9 +1,6 @@
 """
 Zefoy Web API - Merge buff.py + source cũ + OCR tự động
-- Logic boost: từ buff.py (giữ nguyên 100%)
-- Captcha + session: từ source cũ (không cần nhập cookie)
-- OCR tự động giải captcha (newocr.com)
-- Fix lỗi parse JSON
+FIX: Bỏ async def, dùng def thường
 """
 
 from __future__ import annotations
@@ -260,22 +257,18 @@ def solve_captcha(session: requests.Session, captcha_text: str) -> bool:
 def ocr_captcha(image_bytes: bytes) -> str:
     """OCR ảnh captcha tự động - dùng newocr.com"""
     try:
-        # Gửi ảnh lên newocr.com
         files = {'userfile': ('captcha.png', image_bytes, 'image/png')}
         data = {'preview': '1'}
         
-        # Tạo session riêng cho OCR
         ocr_session = requests.Session()
         ocr_session.headers.update({
             'User-Agent': DEFAULT_USER_AGENT,
             'Referer': 'https://www.newocr.com/',
         })
         
-        # Bước 1: Upload ảnh
         resp = ocr_session.post('https://www.newocr.com/', data=data, files=files, timeout=30)
         html_content = resp.text
         
-        # Lấy file_id
         file_id_match = re.search(r'name="u"\s+value="([a-f0-9]{32})"', html_content)
         if not file_id_match:
             file_id_match = re.search(r'name="u"[^>]*value="([^"]+)"', html_content)
@@ -284,7 +277,6 @@ def ocr_captcha(image_bytes: bytes) -> str:
         
         file_id = file_id_match.group(1)
         
-        # Bước 2: Gửi OCR
         ocr_data = {
             'u': file_id,
             'l2[]': 'eng',
@@ -298,7 +290,6 @@ def ocr_captcha(image_bytes: bytes) -> str:
         }
         resp = ocr_session.post('https://www.newocr.com/', data=ocr_data, timeout=30)
         
-        # Lấy kết quả
         result_match = re.search(r'<textarea[^>]*id="ocr-result"[^>]*>([\s\S]*?)</textarea>', resp.text, re.I)
         if result_match:
             text = result_match.group(1).strip()
@@ -787,7 +778,7 @@ class BoostRequest(BaseModel):
     max_runs: int = 10
 
 # ============================================================
-# GIAO DIỆN WEB HTML (ĐÃ FIX LỖI PARSE JSON)
+# GIAO DIỆN WEB HTML
 # ============================================================
 
 HTML_TEMPLATE = """
@@ -1221,288 +1212,284 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
- <script>
-    (function() {
-        const canvas = document.getElementById('matrix');
-        const ctx = canvas.getContext('2d');
-        canvas.width = window.innerWidth;
-        canvas.height = window.innerHeight;
-        const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        const fontSize = 14;
-        const columns = Math.floor(canvas.width / fontSize);
-        const drops = Array(columns).fill(1);
-        
-        function draw() {
-            ctx.fillStyle = 'rgba(0,0,0,0.05)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = '#00ff50';
-            ctx.font = fontSize + 'px monospace';
-            for (let i = 0; i < drops.length; i++) {
-                ctx.fillText(chars[Math.floor(Math.random() * chars.length)], i * fontSize, drops[i] * fontSize);
-                if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) drops[i] = 0;
-                drops[i]++;
-            }
-        }
-        setInterval(draw, 60);
-        window.addEventListener('resize', () => {
+    <script>
+        (function() {
+            const canvas = document.getElementById('matrix');
+            const ctx = canvas.getContext('2d');
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
-        });
-    })();
-
-    let SESSION_ID = null;
-    let isRunning = false;
-    let totalRuns = 0;
-
-    const $ = id => document.getElementById(id);
-    const videoUrl = $('videoUrl');
-    const serviceSelect = $('serviceSelect');
-    const maxRuns = $('maxRuns');
-    const authStatus = $('authStatus');
-    const serviceCount = $('serviceCount');
-    const runCount = $('runCount');
-    const logsContainer = $('logsContainer');
-    const resultBox = $('resultBox');
-    const boostResult = $('boostResult');
-    const boostProgress = $('boostProgress');
-    const progressFill = $('progressFill');
-    const progressText = $('progressText');
-    const servicesContainer = $('servicesContainer');
-    const servicesCard = $('servicesCard');
-    const boostCard = $('boostCard');
-
-    function addLog(message, type = 'system') {
-        const time = new Date().toLocaleTimeString();
-        const entry = document.createElement('div');
-        entry.className = 'log-entry ' + type;
-        entry.innerHTML = '<span class="time">[' + time + ']</span> ' + message;
-        logsContainer.appendChild(entry);
-        logsContainer.scrollTop = logsContainer.scrollHeight;
-    }
-
-    function showResult(el, msg, type = 'info') {
-        el.textContent = msg;
-        el.className = 'result-box show ' + type;
-        el.style.display = 'block';
-    }
-    function hideResult(el) {
-        el.className = 'result-box';
-        el.textContent = '';
-        el.style.display = 'none';
-    }
-
-    function updateStatus(authenticated, services = 0) {
-        if (authenticated) {
-            authStatus.textContent = '🟢 Đã kết nối';
-            authStatus.className = 'value online';
-        } else {
-            authStatus.textContent = '🔴 Chưa kết nối';
-            authStatus.className = 'value offline';
-        }
-        serviceCount.textContent = services;
-    }
-
-    function renderServices(services) {
-        if (!services || services.length === 0) {
-            servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px;">Không có dịch vụ nào</div>';
-            return;
-        }
-        
-        serviceSelect.innerHTML = '<option value="">-- Chọn dịch vụ --</option>';
-        let html = '<div class="services-grid">';
-        services.forEach(s => {
-            const statusClass = s.active ? 'online' : 'offline';
-            const statusText = s.active ? '🟢 ONLINE' : '🔴 OFFLINE';
-            html += '<div class="service-item">';
-            html += '<div class="name">' + s.name + '</div>';
-            html += '<div class="status ' + statusClass + '">' + statusText + ' (' + s.status + ')</div>';
-            html += '</div>';
+            const chars = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+            const fontSize = 14;
+            const columns = Math.floor(canvas.width / fontSize);
+            const drops = Array(columns).fill(1);
             
-            if (s.active) {
-                const opt = document.createElement('option');
-                opt.value = s.name;
-                opt.textContent = '🟢 ' + s.name;
-                serviceSelect.appendChild(opt);
+            function draw() {
+                ctx.fillStyle = 'rgba(0,0,0,0.05)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = '#00ff50';
+                ctx.font = fontSize + 'px monospace';
+                for (let i = 0; i < drops.length; i++) {
+                    ctx.fillText(chars[Math.floor(Math.random() * chars.length)], i * fontSize, drops[i] * fontSize);
+                    if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) drops[i] = 0;
+                    drops[i]++;
+                }
             }
-        });
-        html += '</div>';
-        servicesContainer.innerHTML = html;
-        
-        servicesCard.style.display = 'block';
-        boostCard.style.display = 'block';
-    }
-
-    // ===== HÀM GỌI API CHUẨN =====
-    async function callAPI(endpoint, data = {}) {
-        try {
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
+            setInterval(draw, 60);
+            window.addEventListener('resize', () => {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
             });
+        })();
+
+        let SESSION_ID = null;
+        let isRunning = false;
+        let totalRuns = 0;
+
+        const $ = id => document.getElementById(id);
+        const videoUrl = $('videoUrl');
+        const serviceSelect = $('serviceSelect');
+        const maxRuns = $('maxRuns');
+        const authStatus = $('authStatus');
+        const serviceCount = $('serviceCount');
+        const runCount = $('runCount');
+        const logsContainer = $('logsContainer');
+        const resultBox = $('resultBox');
+        const boostResult = $('boostResult');
+        const boostProgress = $('boostProgress');
+        const progressFill = $('progressFill');
+        const progressText = $('progressText');
+        const servicesContainer = $('servicesContainer');
+        const servicesCard = $('servicesCard');
+        const boostCard = $('boostCard');
+
+        function addLog(message, type = 'system') {
+            const time = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + type;
+            entry.innerHTML = '<span class="time">[' + time + ']</span> ' + message;
+            logsContainer.appendChild(entry);
+            logsContainer.scrollTop = logsContainer.scrollHeight;
+        }
+
+        function showResult(el, msg, type = 'info') {
+            el.textContent = msg;
+            el.className = 'result-box show ' + type;
+            el.style.display = 'block';
+        }
+        function hideResult(el) {
+            el.className = 'result-box';
+            el.textContent = '';
+            el.style.display = 'none';
+        }
+
+        function updateStatus(authenticated, services = 0) {
+            if (authenticated) {
+                authStatus.textContent = '🟢 Đã kết nối';
+                authStatus.className = 'value online';
+            } else {
+                authStatus.textContent = '🔴 Chưa kết nối';
+                authStatus.className = 'value offline';
+            }
+            serviceCount.textContent = services;
+        }
+
+        function renderServices(services) {
+            if (!services || services.length === 0) {
+                servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:8px;">Không có dịch vụ nào</div>';
+                return;
+            }
             
-            const text = await response.text();
+            serviceSelect.innerHTML = '<option value="">-- Chọn dịch vụ --</option>';
+            let html = '<div class="services-grid">';
+            services.forEach(s => {
+                const statusClass = s.active ? 'online' : 'offline';
+                const statusText = s.active ? '🟢 ONLINE' : '🔴 OFFLINE';
+                html += '<div class="service-item">';
+                html += '<div class="name">' + s.name + '</div>';
+                html += '<div class="status ' + statusClass + '">' + statusText + ' (' + s.status + ')</div>';
+                html += '</div>';
+                
+                if (s.active) {
+                    const opt = document.createElement('option');
+                    opt.value = s.name;
+                    opt.textContent = '🟢 ' + s.name;
+                    serviceSelect.appendChild(opt);
+                }
+            });
+            html += '</div>';
+            servicesContainer.innerHTML = html;
             
-            // Kiểm tra response có phải JSON không
-            let result;
+            servicesCard.style.display = 'block';
+            boostCard.style.display = 'block';
+        }
+
+        async function callAPI(endpoint, data = {}) {
             try {
-                result = JSON.parse(text);
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                
+                const text = await response.text();
+                let result;
+                try {
+                    result = JSON.parse(text);
+                } catch (e) {
+                    return {
+                        success: false,
+                        message: 'Server trả về lỗi: ' + text.substring(0, 200),
+                        raw: text
+                    };
+                }
+                
+                return result;
             } catch (e) {
-                // Nếu không phải JSON, trả về lỗi
                 return {
                     success: false,
-                    message: 'Server trả về lỗi: ' + text.substring(0, 200),
-                    raw: text
+                    message: 'Lỗi kết nối: ' + e.message
                 };
             }
-            
-            return result;
-        } catch (e) {
-            return {
-                success: false,
-                message: 'Lỗi kết nối: ' + e.message
-            };
         }
-    }
 
-    async function startSession() {
-        showResult(resultBox, '⏳ Đang khởi tạo session + tự động giải captcha...', 'info');
-        addLog('⏳ Đang khởi tạo session...', 'system');
-        
-        const result = await callAPI('/api/start', {});
-        
-        if (result.success) {
-            SESSION_ID = result.session_id;
-            updateStatus(true, result.services ? result.services.length : 0);
-            showResult(resultBox, '✅ Session khởi tạo thành công! Captcha tự động giải.', 'success');
-            addLog('✅ Session ID: ' + SESSION_ID.slice(0, 16) + '...', 'success');
+        async function startSession() {
+            showResult(resultBox, '⏳ Đang khởi tạo session + tự động giải captcha...', 'info');
+            addLog('⏳ Đang khởi tạo session...', 'system');
             
-            if (result.services && result.services.length > 0) {
+            const result = await callAPI('/api/start', {});
+            
+            if (result.success) {
+                SESSION_ID = result.session_id;
+                updateStatus(true, result.services ? result.services.length : 0);
+                showResult(resultBox, '✅ Session khởi tạo thành công! Captcha tự động giải.', 'success');
+                addLog('✅ Session ID: ' + SESSION_ID.slice(0, 16) + '...', 'success');
+                
+                if (result.services && result.services.length > 0) {
+                    renderServices(result.services);
+                    addLog('📋 Đã tải ' + result.services.length + ' dịch vụ', 'system');
+                }
+            } else {
+                showResult(resultBox, '❌ ' + (result.message || 'Lỗi không xác định'), 'error');
+                addLog('❌ Lỗi: ' + (result.message || 'Không xác định'), 'error');
+            }
+        }
+
+        async function loadServices() {
+            if (!SESSION_ID) {
+                showResult(resultBox, '⚠️ Vui lòng khởi tạo session trước!', 'error');
+                return;
+            }
+            
+            showResult(resultBox, '⏳ Đang tải dịch vụ...', 'info');
+            addLog('⏳ Đang tải dịch vụ...', 'system');
+            
+            const result = await callAPI('/api/services', { session_id: SESSION_ID });
+            
+            if (result.success) {
                 renderServices(result.services);
-                addLog('📋 Đã tải ' + result.services.length + ' dịch vụ', 'system');
+                updateStatus(true, result.services.length);
+                showResult(resultBox, '✅ Đã tải ' + result.services.length + ' dịch vụ', 'success');
+                addLog('✅ Đã tải ' + result.services.length + ' dịch vụ', 'success');
+            } else {
+                showResult(resultBox, '❌ ' + (result.message || 'Lỗi không xác định'), 'error');
+                addLog('❌ Lỗi: ' + (result.message || 'Không xác định'), 'error');
             }
-        } else {
-            showResult(resultBox, '❌ ' + (result.message || 'Lỗi không xác định'), 'error');
-            addLog('❌ Lỗi: ' + (result.message || 'Không xác định'), 'error');
         }
-    }
 
-    async function loadServices() {
-        if (!SESSION_ID) {
-            showResult(resultBox, '⚠️ Vui lòng khởi tạo session trước!', 'error');
-            return;
-        }
-        
-        showResult(resultBox, '⏳ Đang tải dịch vụ...', 'info');
-        addLog('⏳ Đang tải dịch vụ...', 'system');
-        
-        const result = await callAPI('/api/services', { session_id: SESSION_ID });
-        
-        if (result.success) {
-            renderServices(result.services);
-            updateStatus(true, result.services.length);
-            showResult(resultBox, '✅ Đã tải ' + result.services.length + ' dịch vụ', 'success');
-            addLog('✅ Đã tải ' + result.services.length + ' dịch vụ', 'success');
-        } else {
-            showResult(resultBox, '❌ ' + (result.message || 'Lỗi không xác định'), 'error');
-            addLog('❌ Lỗi: ' + (result.message || 'Không xác định'), 'error');
-        }
-    }
-
-    async function startBoost() {
-        if (isRunning) {
-            addLog('⚠️ Bot đang chạy!', 'warning');
-            return;
-        }
-        
-        if (!SESSION_ID) {
-            showResult(boostResult, '⚠️ Vui lòng khởi tạo session trước!', 'error');
-            return;
-        }
-        
-        const url = videoUrl.value.trim();
-        if (!url) {
-            showResult(boostResult, '⚠️ Nhập link TikTok!', 'error');
-            return;
-        }
-        
-        const service = serviceSelect.value;
-        if (!service) {
-            showResult(boostResult, '⚠️ Chọn dịch vụ!', 'error');
-            return;
-        }
-        
-        const runs = parseInt(maxRuns.value) || 10;
-        
-        isRunning = true;
-        boostProgress.classList.add('show');
-        progressFill.style.width = '0%';
-        progressText.textContent = 'Đang bắt đầu...';
-        hideResult(boostResult);
-        addLog('🚀 Bắt đầu boost: ' + service + ' - ' + runs + ' lượt', 'system');
-        
-        const result = await callAPI('/api/boost', {
-            session_id: SESSION_ID,
-            video_url: url,
-            service: service,
-            max_runs: runs
-        });
-        
-        progressFill.style.width = '100%';
-        progressText.textContent = 'Hoàn tất!';
-        
-        if (result.success) {
-            totalRuns += result.runs || 0;
-            runCount.textContent = totalRuns;
+        async function startBoost() {
+            if (isRunning) {
+                addLog('⚠️ Bot đang chạy!', 'warning');
+                return;
+            }
             
-            let msg = '✅ ' + (result.message || 'Boost thành công!');
-            if (result.runs) msg += ' (' + result.runs + ' lượt)';
-            if (result.errors && result.errors.length) {
-                msg += '\\n⚠️ Lỗi: ' + result.errors.join('\\n');
+            if (!SESSION_ID) {
+                showResult(boostResult, '⚠️ Vui lòng khởi tạo session trước!', 'error');
+                return;
             }
-            showResult(boostResult, msg, 'success');
-            addLog('✅ Boost thành công: ' + (result.runs || 0) + ' lượt', 'success');
-        } else {
-            let msg = '❌ ' + (result.message || 'Lỗi không xác định');
-            if (result.errors && result.errors.length) {
-                msg += '\\n⚠️ ' + result.errors.join('\\n');
+            
+            const url = videoUrl.value.trim();
+            if (!url) {
+                showResult(boostResult, '⚠️ Nhập link TikTok!', 'error');
+                return;
             }
-            showResult(boostResult, msg, 'error');
-            addLog('❌ Boost thất bại: ' + (result.message || ''), 'error');
-        }
-        
-        setTimeout(() => {
-            boostProgress.classList.remove('show');
+            
+            const service = serviceSelect.value;
+            if (!service) {
+                showResult(boostResult, '⚠️ Chọn dịch vụ!', 'error');
+                return;
+            }
+            
+            const runs = parseInt(maxRuns.value) || 10;
+            
+            isRunning = true;
+            boostProgress.classList.add('show');
             progressFill.style.width = '0%';
-        }, 3000);
-        
-        isRunning = false;
-    }
-
-    function stopBoost() {
-        if (!isRunning) {
-            addLog('⚠️ Bot không đang chạy', 'warning');
-            return;
+            progressText.textContent = 'Đang bắt đầu...';
+            hideResult(boostResult);
+            addLog('🚀 Bắt đầu boost: ' + service + ' - ' + runs + ' lượt', 'system');
+            
+            const result = await callAPI('/api/boost', {
+                session_id: SESSION_ID,
+                video_url: url,
+                service: service,
+                max_runs: runs
+            });
+            
+            progressFill.style.width = '100%';
+            progressText.textContent = 'Hoàn tất!';
+            
+            if (result.success) {
+                totalRuns += result.runs || 0;
+                runCount.textContent = totalRuns;
+                
+                let msg = '✅ ' + (result.message || 'Boost thành công!');
+                if (result.runs) msg += ' (' + result.runs + ' lượt)';
+                if (result.errors && result.errors.length) {
+                    msg += '\\n⚠️ Lỗi: ' + result.errors.join('\\n');
+                }
+                showResult(boostResult, msg, 'success');
+                addLog('✅ Boost thành công: ' + (result.runs || 0) + ' lượt', 'success');
+            } else {
+                let msg = '❌ ' + (result.message || 'Lỗi không xác định');
+                if (result.errors && result.errors.length) {
+                    msg += '\\n⚠️ ' + result.errors.join('\\n');
+                }
+                showResult(boostResult, msg, 'error');
+                addLog('❌ Boost thất bại: ' + (result.message || ''), 'error');
+            }
+            
+            setTimeout(() => {
+                boostProgress.classList.remove('show');
+                progressFill.style.width = '0%';
+            }, 3000);
+            
+            isRunning = false;
         }
-        isRunning = false;
-        addLog('⏹️ Đã dừng boost', 'warning');
-        showResult(boostResult, '⏹️ Đã dừng boost', 'warning');
-    }
-</script>
+
+        function stopBoost() {
+            if (!isRunning) {
+                addLog('⚠️ Bot không đang chạy', 'warning');
+                return;
+            }
+            isRunning = false;
+            addLog('⏹️ Đã dừng boost', 'warning');
+            showResult(boostResult, '⏹️ Đã dừng boost', 'warning');
+        }
+    </script>
 </body>
 </html>
 """
 
 # ============================================================
-# API ROUTES
+# API ROUTES - DÙNG def THAY VÌ async def
 # ============================================================
 
 @app.get("/", response_class=HTMLResponse)
-async def root():
+def root():
     return HTML_TEMPLATE
 
 @app.get("/api")
-async def api_info():
+def api_info():
     return {
         "name": "Zefoy Bot API",
         "version": "3.0.3",
@@ -1516,7 +1503,7 @@ async def api_info():
     }
 
 @app.post("/api/start")
-async def start_session():
+def start_session():
     """Khởi tạo session mới - tự động giải captcha bằng OCR"""
     session_id = uuid.uuid4().hex
     bot = ZefoyBot()
@@ -1552,7 +1539,7 @@ async def start_session():
     }
 
 @app.post("/api/services")
-async def get_services(req: SessionRequest):
+def get_services(req: SessionRequest):
     st = _get_session(req.session_id)
     bot: ZefoyBot = st["bot"]
     
@@ -1568,7 +1555,7 @@ async def get_services(req: SessionRequest):
     }
 
 @app.post("/api/boost")
-async def boost(req: BoostRequest):
+def boost(req: BoostRequest):
     st = _get_session(req.session_id)
     bot: ZefoyBot = st["bot"]
     
@@ -1589,7 +1576,7 @@ async def boost(req: BoostRequest):
     return result
 
 @app.post("/api/status")
-async def get_status(req: SessionRequest):
+def get_status(req: SessionRequest):
     st = _get_session(req.session_id)
     bot: ZefoyBot = st["bot"]
     
@@ -1603,7 +1590,7 @@ async def get_status(req: SessionRequest):
     }
 
 @app.get("/health")
-async def health():
+def health():
     return {"status": "healthy", "sessions": len(SESSIONS)}
 
 # ============================================================
