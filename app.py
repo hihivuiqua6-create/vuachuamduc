@@ -1,6 +1,7 @@
 """
 Zefoy Web API + Giao diện Web - FastAPI
 Logic 100% từ buff.py gốc (có captcha, cooldown, submit form...)
+FIX: Bỏ Jinja2Templates, thêm exception handler
 """
 
 from __future__ import annotations
@@ -17,9 +18,10 @@ import urllib.parse
 import subprocess
 from typing import Any, Optional, Dict, List
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.exceptions import HTTPException as FastAPIHTTPException
 from pydantic import BaseModel
 import requests
 from bs4 import BeautifulSoup
@@ -41,6 +43,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ============================================================
+# GLOBAL EXCEPTION HANDLER - TRẢ JSON THAY VÌ HTML
+# ============================================================
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "success": False,
+            "message": str(exc),
+            "error_type": type(exc).__name__
+        }
+    )
+
+@app.exception_handler(FastAPIHTTPException)
+async def http_exception_handler(request: Request, exc: FastAPIHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "success": False,
+            "message": exc.detail,
+            "status_code": exc.status_code
+        }
+    )
 
 # ============================================================
 # LOGIC TỪ buff.py GỐC (GIỐNG 100%)
@@ -1364,8 +1392,8 @@ HTML_TEMPLATE = """
                     localStorage.setItem('zefoy_ua', uaInput.value.trim());
                     
                 } else {
-                    showResult(resultBox, '❌ ' + (data.detail || 'Lỗi không xác định'), 'error');
-                    addLog('❌ Lỗi: ' + (data.detail || 'Không xác định'), 'error');
+                    showResult(resultBox, '❌ ' + (data.message || data.detail || 'Lỗi không xác định'), 'error');
+                    addLog('❌ Lỗi: ' + (data.message || data.detail || 'Không xác định'), 'error');
                 }
             } catch (e) {
                 showResult(resultBox, '❌ Lỗi: ' + e.message, 'error');
@@ -1479,8 +1507,8 @@ HTML_TEMPLATE = """
                     showResult(resultBox, '✅ Đã tải ' + data.services.length + ' dịch vụ', 'success');
                     addLog('✅ Đã tải ' + data.services.length + ' dịch vụ', 'success');
                 } else {
-                    showResult(resultBox, '❌ ' + (data.detail || 'Lỗi không xác định'), 'error');
-                    addLog('❌ Lỗi: ' + (data.detail || 'Không xác định'), 'error');
+                    showResult(resultBox, '❌ ' + (data.message || data.detail || 'Lỗi không xác định'), 'error');
+                    addLog('❌ Lỗi: ' + (data.message || data.detail || 'Không xác định'), 'error');
                 }
             } catch (e) {
                 showResult(resultBox, '❌ Lỗi: ' + e.message, 'error');
