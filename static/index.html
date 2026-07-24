@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TIENDEV • Buff Panel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Inter:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#07080d; --bg2:#0d0f18; --card:#12141f; --line:#1d2030;
+  --fg:#e9ecff; --mut:#8790b8;
+  --pri:#ff2e54; --pri2:#ffb020; --acc:#00e5ff; --ok:#00ff64; --err:#ff4b76;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--bg);color:var(--fg);font-family:Inter,system-ui,sans-serif}
+body{background:
+  radial-gradient(1200px 600px at 10% -10%,rgba(255,46,84,.18),transparent 60%),
+  radial-gradient(900px 500px at 100% 0%,rgba(0,229,255,.14),transparent 60%),
+  radial-gradient(700px 500px at 50% 120%,rgba(255,176,32,.12),transparent 60%),
+  var(--bg);
+  min-height:100vh;
+}
+.wrap{max-width:960px;margin:0 auto;padding:24px 18px 60px}
+.brand{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+.logo{width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,var(--pri),var(--pri2));display:grid;place-items:center;font-weight:800;color:#0a0a0a;font-size:22px;box-shadow:0 10px 30px rgba(255,46,84,.35)}
+.brand h1{margin:0;font-size:22px;letter-spacing:.5px}
+.brand p{margin:2px 0 0;color:var(--mut);font-size:13px}
+.badge{display:inline-block;padding:3px 8px;font-size:11px;font-family:JetBrains Mono,monospace;border:1px solid var(--line);border-radius:6px;color:var(--acc);margin-left:8px}
+.card{background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,0)),var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.card h2{margin:0 0 14px;font-size:15px;font-weight:700;color:#fff;display:flex;align-items:center;gap:10px}
+.card h2 .num{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--pri),var(--pri2));color:#0a0a0a;font-weight:800;font-size:13px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>*{flex:1;min-width:0}
+.btn{background:linear-gradient(135deg,var(--pri),var(--pri2));color:#0a0a0a;border:0;padding:12px 18px;border-radius:10px;cursor:pointer;font-weight:800;font-size:14px;letter-spacing:.3px;transition:transform .1s ease,box-shadow .2s ease;box-shadow:0 8px 20px rgba(255,46,84,.35)}
+.btn:hover{transform:translateY(-1px)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--fg);box-shadow:none}
+.btn.ghost:hover{border-color:var(--acc);color:var(--acc)}
+.btn.acc{background:linear-gradient(135deg,var(--acc),#7cf5ff);color:#001318;box-shadow:0 8px 20px rgba(0,229,255,.3)}
+input,select,textarea{background:var(--bg2);color:var(--fg);border:1px solid var(--line);padding:12px 14px;border-radius:10px;width:100%;font-size:14px;font-family:inherit;transition:border-color .2s}
+input:focus,select:focus,textarea:focus{outline:0;border-color:var(--acc)}
+label.chk{display:flex;align-items:center;gap:8px;color:var(--mut);font-size:13px;cursor:pointer;padding:8px 12px;border:1px solid var(--line);border-radius:10px}
+.captcha-wrap{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-top:12px}
+.captcha-img{background:#fff;padding:8px;border-radius:10px;min-width:220px;min-height:80px;display:grid;place-items:center}
+.captcha-img img{max-width:220px;display:block;border-radius:4px}
+.captcha-side{flex:1;min-width:220px;display:flex;flex-direction:column;gap:10px}
+.hidden{display:none !important}
+.mut{color:var(--mut);font-size:12px;font-family:JetBrains Mono,monospace}
+.stats{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.stat{flex:1;min-width:140px;background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.stat .k{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.8px}
+.stat .v{color:#fff;font-size:20px;font-weight:800;font-family:JetBrains Mono,monospace;margin-top:2px}
+.stat.ok .v{color:var(--ok)}
+.stat.warn .v{color:var(--pri2)}
+#log{max-height:280px;overflow:auto;font-size:12px;background:#05060a;padding:12px;border-radius:10px;border:1px solid var(--line);font-family:JetBrains Mono,monospace;line-height:1.6}
+#log .li{border-left:2px solid var(--line);padding-left:8px;margin-bottom:6px;color:var(--fg)}
+#log .li.ok{border-color:var(--ok);color:var(--ok)}
+#log .li.err{border-color:var(--err);color:var(--err)}
+#log .li.warn{border-color:var(--pri2);color:var(--pri2)}
+#log .li .t{color:var(--mut);margin-right:6px}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-family:JetBrains Mono,monospace;border:1px solid var(--line)}
+.pill.on{color:var(--ok);border-color:rgba(0,255,100,.35)}
+.pill.off{color:var(--err);border-color:rgba(255,75,118,.35)}
+.footer{color:var(--mut);font-size:12px;text-align:center;margin-top:24px}
+.footer b{color:var(--pri)}
+@media(max-width:520px){.brand h1{font-size:18px}.card{padding:16px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="brand">
+  <div class="logo">TD</div>
+  <div>
+    <h1>TIENDEV Buff Panel <span class="badge">v1.0 • auto-captcha</span></h1>
+    <p>Buff TikTok tự động — không cần cookie / user-agent. Session tự lấy, captcha tự giải.</p>
+  </div>
+</div>
+
+<div class="card" id="cardStart">
+  <h2><span class="num">1</span> Khởi tạo phiên & giải Captcha</h2>
+  <div class="row">
+    <button class="btn" id="btnStart">▶ Bắt đầu phiên</button>
+    <button class="btn ghost hidden" id="btnRefresh">🔄 Ảnh khác</button>
+    <button class="btn acc hidden" id="btnAuto">🤖 Tự giải (OCR)</button>
+  </div>
+  <div id="capBox" class="captcha-wrap hidden">
+    <div class="captcha-img"><img id="capImg" alt="captcha"/></div>
+    <div class="captcha-side">
+      <input id="capAns" placeholder="Nhập chữ trong ảnh (chỉ chữ cái)" autocomplete="off" spellcheck="false"/>
+      <button class="btn" id="btnSolve">✔ Gửi mã</button>
+      <div class="mut">session: <span id="sid">—</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="card hidden" id="cardSvc">
+  <h2><span class="num">2</span> Chọn dịch vụ & link video</h2>
+  <div class="row" style="margin-bottom:10px">
+    <select id="svc"></select>
+    <button class="btn ghost" id="btnReload" style="max-width:60px">↻</button>
+  </div>
+  <input id="vurl" placeholder="https://www.tiktok.com/@user/video/..." style="margin-bottom:10px"/>
+  <div class="row">
+    <button class="btn" id="btnRun">🚀 Buff ngay</button>
+    <label class="chk"><input type="checkbox" id="loop"/> Lặp tự động</label>
+    <input id="loopN" type="number" min="0" placeholder="Số lượt (0 = vô tận)" style="max-width:180px"/>
+  </div>
+</div>
+
+<div class="card hidden" id="cardStat">
+  <h2><span class="num">3</span> Kết quả & Log</h2>
+  <div class="stats">
+    <div class="stat ok"><div class="k">Tổng đã gửi</div><div class="v" id="tot">0</div></div>
+    <div class="stat"><div class="k">Lượt gần nhất</div><div class="v" id="lst">—</div></div>
+    <div class="stat warn"><div class="k">Cooldown</div><div class="v" id="cd">—</div></div>
+    <div class="stat"><div class="k">Đã chạy</div><div class="v" id="cnt">0</div></div>
+  </div>
+  <div id="log"></div>
+</div>
+
+<div class="footer">Made by <b>TIENDEV</b> — Zefoy backend • Logic buff.py v3.0.3 • Auto-solve OCR</div>
+</div>
+
+<script>
+const API = location.origin;
+let SID = null, LOOP_TIMER = null, RUN_COUNT = 0, CD_TIMER = null;
+
+const $ = id => document.getElementById(id);
+function log(msg, cls){
+  const box = $('log');
+  const d = document.createElement('div');
+  d.className = 'li' + (cls ? ' ' + cls : '');
+  d.innerHTML = '<span class="t">['+new Date().toLocaleTimeString()+']</span>' + msg;
+  box.prepend(d);
+}
+async function call(path, body){
+  const r = await fetch(API + path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})});
+  let j; try{ j = await r.json(); }catch(e){ throw new Error('Server trả về không phải JSON (HTTP '+r.status+')'); }
+  if(!r.ok) throw new Error(j.message || j.error || ('HTTP '+r.status));
+  return j;
+}
+function showCaptcha(b64){
+  if(!b64){ $('capBox').classList.add('hidden'); return; }
+  $('capBox').classList.remove('hidden');
+  $('capImg').src = 'data:image/png;base64,' + b64;
+  $('btnRefresh').classList.remove('hidden');
+  $('btnAuto').classList.remove('hidden');
+}
+function renderServices(list){
+  const sel = $('svc'); sel.innerHTML = '';
+  (list||[]).forEach(s => {
+    const o = document.createElement('option');
+    o.value = s.name;
+    o.textContent = (s.active ? '🟢 ' : '🔴 ') + s.name + ' — ' + s.status;
+    if(!s.active) o.disabled = true;
+    sel.appendChild(o);
+  });
+  $('cardSvc').classList.remove('hidden');
+  $('cardStat').classList.remove('hidden');
+}
+function startCooldownTicker(sec){
+  if(CD_TIMER) clearInterval(CD_TIMER);
+  let s = sec;
+  $('cd').textContent = s + 's';
+  CD_TIMER = setInterval(()=>{
+    s--; if(s<=0){ clearInterval(CD_TIMER); $('cd').textContent='—'; }
+    else $('cd').textContent = s + 's';
+  }, 1000);
+}
+
+$('btnStart').onclick = async () => {
+  try{
+    log('Đang tạo phiên & lấy captcha...');
+    const j = await call('/api/start');
+    SID = j.session_id; $('sid').textContent = SID.slice(0,10) + '…';
+    if(j.logged_in){ log('Đã đăng nhập sẵn — bỏ qua captcha','ok'); renderServices(j.services); }
+    else { showCaptcha(j.captcha_b64); log('Đã có captcha, chọn tự giải hoặc nhập tay','ok'); }
+  }catch(e){ log('Lỗi: '+e.message,'err'); }
+};
+$('btnRefresh').onclick = async () => {
+  try{ const j = await call('/api/refresh_captcha',{session_id:SID}); showCaptcha(j.captcha_b64); log('Đã tải ảnh captcha mới'); }
+  catch(e){ log('Lỗi: '+e.message,'err'); }
+};
+$('btnAuto').onclick = async () => {
+  try{
+    log('OCR đang giải captcha...');
+    const j = await call('/api/auto_solve',{session_id:SID});
+    if(j.ok){ log('OCR OK ("'+j.answer+'") — đã đăng nhập','ok'); renderServices(j.services); $('capBox').classList.add('hidden'); }
+    else{ if(j.captcha_b64) showCaptcha(j.captcha_b64); log(j.message||'OCR fail','warn'); }
+  }catch(e){ log('Lỗi: '+e.message,'err'); }
+};
+$('btnSolve').onclick = async () => {
+  const a = $('capAns').value.trim(); if(!a){ log('Nhập mã đã','err'); return; }
+  try{
+    const j = await call('/api/solve',{session_id:SID,answer:a});
+    if(j.ok){ log('Captcha OK','ok'); renderServices(j.services); $('capBox').classList.add('hidden'); }
+    else{ if(j.captcha_b64) showCaptcha(j.captcha_b64); log(j.message||'Sai','err'); $('capAns').value=''; }
+  }catch(e){ log('Lỗi: '+e.message,'err'); }
+};
+$('btnReload').onclick = async () => {
+  try{ const j = await call('/api/services',{session_id:SID}); renderServices(j.services); $('tot').textContent = j.total_sent||0; log('Đã tải lại dịch vụ'); }
+  catch(e){ log('Lỗi: '+e.message,'err'); }
+};
+
+async function runOnce(){
+  const svc = $('svc').value, url = $('vurl').value.trim();
+  if(!url){ log('Thiếu link video','err'); return false; }
+  try{
+    log('▶ Gửi buff → '+svc);
+    const j = await call('/api/run',{session_id:SID, service:svc, url:url});
+    RUN_COUNT++; $('cnt').textContent = RUN_COUNT;
+    if(j.status === 'cooldown'){ log('Cooldown '+j.cooldown+'s: '+(j.message||''),'warn'); startCooldownTicker(j.cooldown); return {cooldown:j.cooldown}; }
+    if(j.status === 'error'){ log('Lỗi: '+(j.message||'unknown'),'err'); return false; }
+    if(j.amount){ $('lst').textContent = j.amount + ' ' + (j.picked_max?'(max '+j.picked_max+')':''); log('+'+j.amount+' '+(j.message||''),'ok'); }
+    else{ log(j.message || 'Đã gửi','ok'); }
+    $('tot').textContent = j.total_sent || 0;
+    if(j.cooldown) startCooldownTicker(j.cooldown);
+    return true;
+  }catch(e){ log('Lỗi: '+e.message,'err'); return false; }
+}
+
+$('btnRun').onclick = async () => {
+  if(LOOP_TIMER){ clearTimeout(LOOP_TIMER); LOOP_TIMER=null; log('Đã dừng vòng lặp cũ'); }
+  const limit = parseInt($('loopN').value||'0',10) || 0;
+  let done = 0;
+  const tick = async () => {
+    const r = await runOnce();
+    done++;
+    if(!$('loop').checked){ LOOP_TIMER=null; return; }
+    if(limit>0 && done>=limit){ log('🎉 Đã đủ '+limit+' lượt, dừng','ok'); LOOP_TIMER=null; return; }
+    const wait = (r && r.cooldown) ? (r.cooldown*1000 + 2000) : 12000;
+    LOOP_TIMER = setTimeout(tick, wait);
+  };
+  tick();
+};
+</script>
+</body>
+</html>
