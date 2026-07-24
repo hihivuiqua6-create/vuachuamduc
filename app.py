@@ -50,7 +50,7 @@ def save_config(config):
 CONFIG = load_config()
 
 # ============================================================
-# ZEFOY BOT LOGIC (GIỐNG HỆT buff.py GỐC)
+# ZEFOY BOT LOGIC - FIX CHO LAYOUT MỚI
 # ============================================================
 
 def parse_cookie_string(cookie_str):
@@ -154,79 +154,232 @@ def extract_cooldown_seconds(decoded_response):
 
     return 0, ""
 
+# ===== FIX: HÀM GET_SERVICES CHO LAYOUT MỚI =====
 def get_services(session):
-    r = session.get('https://zefoy.com/')
-    html_content = decode_zefoy_response(r.text)
-    
-    soup = BeautifulSoup(html_content, 'html.parser')
-    cards = soup.find_all('div', class_='colsmenu')
-    
-    services = []
-    for card in cards:
-        title_tag = card.find('h5', class_='card-title')
-        if not title_tag:
-            continue
-        title = title_tag.text.strip()
-        btn = card.find('button')
-        if not btn:
-            continue
-            
-        is_active = 'disabled' not in btn.attrs
+    """Lấy danh sách dịch vụ - FIX cho layout mới của Zefoy"""
+    try:
+        r = session.get('https://zefoy.com/')
+        html_content = decode_zefoy_response(r.text)
         
-        btn_class = ""
-        for cls in btn.get('class', []):
-            if cls.startswith('t-') and cls.endswith('-button'):
-                btn_class = cls
-                break
+        soup = BeautifulSoup(html_content, 'html.parser')
+        services = []
+        
+        # ===== CÁCH 1: Tìm card service từ class chứa 'col-' =====
+        cards = soup.find_all('div', class_=re.compile(r'col-(?:lg|md|sm|xs)-[0-9]+'))
+        
+        # ===== CÁCH 2: Tìm div có chứa button t-*-button =====
+        if not cards or len(cards) < 2:
+            cards = []
+            buttons = soup.find_all('button', class_=re.compile(r't-[a-z]+-button'))
+            for btn in buttons:
+                parent = btn.parent
+                while parent and parent.name != 'div':
+                    parent = parent.parent
+                if parent and parent not in cards:
+                    cards.append(parent)
+        
+        # ===== CÁCH 3: Tìm div có class chứa 'service' hoặc 'menu' =====
+        if not cards or len(cards) < 2:
+            cards = soup.find_all('div', class_=re.compile(r'service|menu|widget|box|card'))
+        
+        # ===== CÁCH 4: Quét tất cả div có class =====
+        if not cards or len(cards) < 2:
+            cards = soup.find_all('div', class_=True)
+        
+        # Lọc và xử lý
+        seen_titles = set()
+        for card in cards:
+            try:
+                # Lấy title
+                title_tag = card.find('h5') or card.find('h4') or card.find('h3') or card.find('strong') or card.find('span', class_=re.compile(r'title|name|label'))
+                if not title_tag:
+                    continue
                 
-        status_tag = card.find(class_='badge')
-        if not status_tag:
-            status_tag = card.find('small')
-        status_text = status_tag.text.strip() if status_tag else ("ON" if is_active else "OFF")
+                title = title_tag.text.strip()
+                if not title or len(title) < 2 or title in seen_titles:
+                    continue
+                
+                # Bỏ qua các title không phải dịch vụ
+                if any(x in title.lower() for x in ['join', 'youtube', 'telegram', 'copyright', 'follow', 'soon', 'update', 'zefoy', 'home', 'welcome', 'terms', 'privacy', 'contact']):
+                    continue
+                
+                seen_titles.add(title)
+                
+                # Lấy button
+                btn = card.find('button')
+                if not btn:
+                    btn = card.find('input', type='submit')
+                if not btn:
+                    btn = card.find('a', class_=re.compile(r'btn|button'))
+                
+                # Kiểm tra active
+                is_active = True
+                if btn and hasattr(btn, 'attrs'):
+                    is_active = 'disabled' not in btn.attrs
+                
+                # Lấy class button
+                btn_class = ""
+                if btn and hasattr(btn, 'get'):
+                    for cls in btn.get('class', []):
+                        if isinstance(cls, str) and cls.startswith('t-') and cls.endswith('-button'):
+                            btn_class = cls
+                            break
+                
+                # Lấy status
+                status_tag = card.find(class_='badge') or card.find('small') or card.find('span', class_=re.compile(r'status|badge|label|alert'))
+                status_text = status_tag.text.strip() if status_tag else ("ON" if is_active else "OFF")
+                
+                # Lấy menu_class
+                menu_class = ""
+                if btn_class:
+                    menu_class = btn_class.replace('-button', '-menu')
+                else:
+                    form = card.find('form')
+                    if form:
+                        for cls in form.get('class', []):
+                            if isinstance(cls, str) and 'menu' in cls:
+                                menu_class = cls
+                                break
+                
+                if not menu_class:
+                    form = card.find('form')
+                    if form:
+                        parent = form.parent
+                        while parent:
+                            if parent.name == 'div' and parent.get('class'):
+                                for cls in parent.get('class', []):
+                                    if isinstance(cls, str) and ('menu' in cls or 'form' in cls):
+                                        menu_class = cls
+                                        break
+                                if menu_class:
+                                    break
+                            parent = parent.parent
+                
+                services.append({
+                    'name': title,
+                    'active': is_active,
+                    'status': status_text,
+                    'btn_class': btn_class,
+                    'menu_class': menu_class
+                })
+                
+            except Exception as e:
+                continue
         
-        services.append({
-            'name': title,
-            'active': is_active,
-            'status': status_text,
-            'btn_class': btn_class,
-            'menu_class': btn_class.replace('-button', '-menu') if btn_class else ""
-        })
+        # Nếu không tìm thấy service nào, thử cách cuối: lấy từ các form
+        if not services:
+            forms = soup.find_all('form')
+            for form in forms:
+                try:
+                    title_tag = form.find_previous('h5') or form.find_previous('h4') or form.find_previous('h3')
+                    if not title_tag:
+                        continue
+                    
+                    title = title_tag.text.strip()
+                    if not title or title in seen_titles:
+                        continue
+                    
+                    if any(x in title.lower() for x in ['join', 'youtube', 'telegram', 'copyright']):
+                        continue
+                    
+                    seen_titles.add(title)
+                    
+                    btn = form.find('button') or form.find('input', type='submit')
+                    is_active = True
+                    if btn and hasattr(btn, 'attrs'):
+                        is_active = 'disabled' not in btn.attrs
+                    
+                    services.append({
+                        'name': title,
+                        'active': is_active,
+                        'status': 'ON' if is_active else 'OFF',
+                        'btn_class': '',
+                        'menu_class': ''
+                    })
+                except:
+                    continue
         
-    return services, html_content
+        return services, html_content
+        
+    except Exception as e:
+        logger.error(f"Error in get_services: {e}")
+        return [], ""
 
+# ===== FIX: HÀM GET_SERVICE_FORM CHO LAYOUT MỚI =====
 def get_service_form(html_content, menu_class):
-    soup = BeautifulSoup(html_content, 'html.parser')
-    menu_div = soup.find('div', class_=menu_class)
-    if not menu_div:
-        menu_div = soup.find(class_=re.compile(menu_class))
+    """Lấy form cho dịch vụ - FIX cho layout mới"""
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
         
-    if not menu_div:
+        # Cách 1: Tìm bằng menu_class
+        if menu_class:
+            menu_div = soup.find('div', class_=menu_class)
+            if menu_div:
+                form = menu_div.find('form')
+                if form:
+                    return extract_form_data(form)
+        
+        # Cách 2: Tìm tất cả form và khớp với service
+        forms = soup.find_all('form')
+        for form in forms:
+            title_tag = form.find_previous('h5') or form.find_previous('h4') or form.find_previous('h3')
+            if title_tag:
+                title = title_tag.text.strip()
+                if menu_class and title.lower().replace(' ', '-') in menu_class.lower():
+                    return extract_form_data(form)
+        
+        # Cách 3: Lấy form đầu tiên có input search
+        for form in forms:
+            search_input = form.find('input', type='search') or form.find('input', class_=re.compile(r'search|form-control'))
+            if search_input:
+                return extract_form_data(form)
+        
+        # Cách 4: Lấy form có action chứa 'c2VuZ'
+        for form in forms:
+            action = form.get('action', '')
+            if 'c2VuZ' in action:
+                return extract_form_data(form)
+        
+        # Cách 5: Lấy form đầu tiên
+        if forms:
+            return extract_form_data(forms[0])
+        
         return None
         
-    form = menu_div.find('form')
-    if not form:
+    except Exception as e:
+        logger.error(f"Error in get_service_form: {e}")
         return None
+
+def extract_form_data(form):
+    """Trích xuất dữ liệu từ form"""
+    try:
+        action = form.get('action', '')
+        if action and not action.startswith('http'):
+            action = action.lstrip('/')
         
-    action = form.get('action')
-    search_input = form.find('input', type='search')
-    if not search_input:
-        search_input = form.find('input', class_='form-control')
+        search_input = form.find('input', type='search') or form.find('input', class_=re.compile(r'search|form-control'))
+        input_name = search_input.get('name') if search_input else None
         
-    input_name = search_input.get('name') if search_input else None
-    if not input_name:
-        for inp in form.find_all('input'):
-            inp_type = inp.get('type', 'text').lower()
-            if inp_type in ['search', 'text'] and inp.get('name'):
-                input_name = inp.get('name')
-                break
-    return {
-        'action': action,
-        'input_name': input_name
-    }
+        if not input_name:
+            for inp in form.find_all('input'):
+                inp_type = inp.get('type', 'text').lower()
+                if inp_type in ['search', 'text'] and inp.get('name'):
+                    input_name = inp.get('name')
+                    break
+        
+        return {
+            'action': action,
+            'input_name': input_name,
+            'form': form
+        }
+    except:
+        return None
+
+# ============================================================
+# ZEFOY BOT CLASS
+# ============================================================
 
 class ZefoyBot:
-    """Class giống logic buff.py gốc"""
-    
     def __init__(self, cookie_string, user_agent=None):
         self.cookie_string = cookie_string
         self.user_agent = user_agent or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -241,8 +394,8 @@ class ZefoyBot:
         
         session.headers.update({
             'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'accept-language': 'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5',
-            'sec-ch-ua': '"Not;A=Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'accept-language': 'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.7',
+            'sec-ch-ua': '"Not)A;Brand";v="99", "Google Chrome";v="127", "Chromium";v="127"',
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '"Windows"',
             'sec-fetch-dest': 'document',
@@ -255,27 +408,31 @@ class ZefoyBot:
         return session
     
     def authenticate(self):
-        """Kiểm tra đăng nhập giống buff.py"""
         try:
             r = self.session.get('https://zefoy.com/')
             html_content = decode_zefoy_response(r.text)
             
             if 't-followers-button' in html_content or 't-hearts-button' in html_content or 'colsmenu' in html_content:
                 return True
+            
+            if 'card-title' in html_content or 'col-' in html_content:
+                soup = BeautifulSoup(html_content, 'html.parser')
+                buttons = soup.find_all('button', class_=re.compile(r't-[a-z]+-button'))
+                if buttons:
+                    return True
+            
             return False
         except Exception as e:
             logger.error(f"Auth error: {e}")
             return False
     
     def get_services_list(self):
-        """Lấy danh sách dịch vụ giống buff.py"""
         services, home_html = get_services(self.session)
         self.services = services
         self.home_html = home_html
         return services
     
     def boost(self, video_url, service_name, max_runs=10):
-        """Thực hiện boost giống hệt buff.py"""
         results = {
             'success': False,
             'message': '',
@@ -284,143 +441,141 @@ class ZefoyBot:
         }
         
         try:
-            # Lấy services nếu chưa có
             if not self.services:
                 self.get_services_list()
             
-            # Tìm service
+            # Tìm service - khớp tên gần đúng
             selected_service = None
             for s in self.services:
                 if service_name.lower() in s['name'].lower():
                     selected_service = s
                     break
+                if any(word in s['name'].lower() for word in service_name.lower().split()):
+                    selected_service = s
+                    break
             
             if not selected_service:
-                results['message'] = f'Không tìm thấy dịch vụ "{service_name}"'
+                results['message'] = f'Không tìm thấy dịch vụ "{service_name}". Danh sách: {", ".join([s["name"] for s in self.services[:5]])}...'
                 return results
             
             if not selected_service['active']:
                 results['message'] = f'Dịch vụ "{selected_service["name"]}" đang bảo trì'
                 return results
             
-            # Lấy form giống buff.py
-            form_info = get_service_form(self.home_html, selected_service['menu_class'])
-            if not form_info or not form_info['action'] or not form_info['input_name']:
+            form_info = get_service_form(self.home_html, selected_service.get('menu_class', ''))
+            if not form_info or not form_info.get('action') or not form_info.get('input_name'):
+                r = self.session.get('https://zefoy.com/')
+                html_content = decode_zefoy_response(r.text)
+                form_info = get_service_form(html_content, selected_service.get('menu_class', ''))
+                
+            if not form_info or not form_info.get('action') or not form_info.get('input_name'):
                 results['message'] = f'Không tìm thấy form cho dịch vụ {selected_service["name"]}'
                 return results
             
-            action_url = f"https://zefoy.com/{form_info['action']}"
+            action_url = f"https://zefoy.com/{form_info['action'].lstrip('/')}"
             input_name = form_info['input_name']
             
-            # AJAX headers giống buff.py
             ajax_headers = {
                 'accept': '*/*',
-                'accept-language': 'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5',
+                'accept-language': 'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.7',
                 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                 'origin': 'https://zefoy.com',
-                'sec-ch-ua': '"Not;A=Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                'sec-ch-ua-mobile': '?0',
-                'sec-ch-ua-platform': '"Windows"',
-                'sec-fetch-dest': 'empty',
-                'sec-fetch-mode': 'cors',
-                'sec-fetch-site': 'same-origin',
-                'user-agent': self.user_agent,
+                'referer': 'https://zefoy.com/',
                 'x-requested-with': 'XMLHttpRequest',
-                'referer': 'https://zefoy.com/'
+                'user-agent': self.user_agent,
             }
             
             runs = 0
             while runs < max_runs:
                 try:
-                    # Gửi request tìm kiếm - giống buff.py
                     search_data = {input_name: video_url}
                     
-                    # Thử tối đa 3 lần nếu gặp Checking Timer
-                    for attempt in range(3):
-                        r = self.session.post(action_url, headers=ajax_headers, data=search_data)
-                        decoded_response = decode_zefoy_response(r.text)
-                        
-                        soup = BeautifulSoup(decoded_response, 'html.parser')
-                        total_wait, countdown_text = extract_cooldown_seconds(decoded_response)
-                        
-                        form = soup.find('form')
-                        submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn'))
-                        
-                        if (total_wait > 0 and "Mặc định 120s" not in countdown_text) or form or submit_btn:
-                            break
-                        
-                        if attempt < 2:
-                            time.sleep(2.5)
+                    r = self.session.post(action_url, headers=ajax_headers, data=search_data)
+                    decoded_response = decode_zefoy_response(r.text)
                     
-                    # Kiểm tra cooldown
+                    soup = BeautifulSoup(decoded_response, 'html.parser')
+                    total_wait, countdown_text = extract_cooldown_seconds(decoded_response)
+                    
                     if total_wait > 0:
                         results['errors'].append(f"Cooldown: {countdown_text}")
                         results['message'] = f"Đang chờ cooldown: {countdown_text}"
                         return results
                     
-                    # Tìm form submit - giống buff.py
-                    if form or submit_btn:
-                        target_form = form if form else submit_btn.find_parent('form')
-                        submit_action = target_form.get('action') if target_form else None
-                        if not submit_action or submit_action.strip() == "" or submit_action == "/" or not submit_action.startswith('c2VuZ'):
-                            submit_action = form_info['action']
-                        submit_url = f"https://zefoy.com/{submit_action}"
+                    submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn|submit'))
+                    if not submit_btn:
+                        submit_btn = soup.find('input', type='submit')
+                    
+                    if submit_btn:
+                        target_form = submit_btn.find_parent('form')
+                        if not target_form:
+                            target_form = soup.find('form')
                         
-                        submit_data = {}
-                        inputs = target_form.find_all('input') if target_form else soup.find_all('input')
-                        for inp in inputs:
-                            name = inp.get('name')
-                            val = inp.get('value', '')
-                            if name:
-                                submit_data[name] = val
-                        
-                        # Chọn option cao nhất - giống buff.py
-                        selects = target_form.find_all('select') if target_form else soup.find_all('select')
-                        for sel in selects:
-                            name = sel.get('name')
-                            if not name:
-                                continue
-                            options = sel.find_all('option')
-                            max_val = None
-                            max_int = -1
-                            for opt in options:
-                                val = opt.get('value', '').strip()
-                                if not val:
+                        if target_form:
+                            submit_action = target_form.get('action', '')
+                            if submit_action and not submit_action.startswith('http'):
+                                submit_action = f"https://zefoy.com/{submit_action.lstrip('/')}"
+                            elif not submit_action:
+                                submit_action = action_url
+                            
+                            submit_data = {}
+                            for inp in target_form.find_all('input'):
+                                name = inp.get('name')
+                                val = inp.get('value', '')
+                                if name:
+                                    submit_data[name] = val
+                            
+                            selects = target_form.find_all('select')
+                            for sel in selects:
+                                name = sel.get('name')
+                                if not name:
                                     continue
-                                try:
-                                    val_int = int(val)
-                                    if val_int > max_int:
-                                        max_int = val_int
-                                        max_val = val
-                                except ValueError:
-                                    if max_val is None:
-                                        max_val = val
-                            if max_val is not None:
-                                submit_data[name] = max_val
-                        
-                        actual_btn = target_form.find('button', type='submit') if target_form else submit_btn
-                        if actual_btn and actual_btn.get('name'):
-                            submit_data[actual_btn.get('name')] = actual_btn.get('value', '')
-                        
-                        # Gửi boost request
-                        boost_r = self.session.post(submit_url, headers=ajax_headers, data=submit_data)
-                        decoded_boost = decode_zefoy_response(boost_r.text)
-                        result_text = clean_html_text(decoded_boost)
-                        
-                        if not result_text:
-                            result_text = "Phản hồi không chứa thông báo văn bản."
-                        
-                        runs += 1
-                        results['runs'] = runs
-                        results['message'] = result_text
-                        results['success'] = True
-                        
-                        # Chờ 10 giây trước lần tiếp theo - giống buff.py
-                        if runs < max_runs:
-                            time.sleep(10)
+                                options = sel.find_all('option')
+                                max_val = None
+                                max_int = -1
+                                for opt in options:
+                                    val = opt.get('value', '').strip()
+                                    if not val:
+                                        continue
+                                    try:
+                                        val_int = int(val)
+                                        if val_int > max_int:
+                                            max_int = val_int
+                                            max_val = val
+                                    except ValueError:
+                                        if max_val is None:
+                                            max_val = val
+                                if max_val is not None:
+                                    submit_data[name] = max_val
+                            
+                            if submit_btn.get('name'):
+                                submit_data[submit_btn.get('name')] = submit_btn.get('value', '')
+                            
+                            boost_r = self.session.post(submit_action, headers=ajax_headers, data=submit_data)
+                            decoded_boost = decode_zefoy_response(boost_r.text)
+                            result_text = clean_html_text(decoded_boost)
+                            
+                            if not result_text:
+                                result_text = "Boost thành công!"
+                            
+                            runs += 1
+                            results['runs'] = runs
+                            results['message'] = result_text
+                            results['success'] = True
+                            
+                            if runs < max_runs:
+                                time.sleep(10)
+                        else:
+                            results['errors'].append("Không tìm thấy form submit")
+                            break
                     else:
-                        err_text = clean_html_text(decoded_response)
-                        results['errors'].append(f"Không tìm thấy nút Submit: {err_text}")
+                        if 'please wait' in decoded_response.lower() or 'wait' in decoded_response.lower():
+                            total_wait, _ = extract_cooldown_seconds(decoded_response)
+                            if total_wait > 0:
+                                results['errors'].append(f"Đang chờ cooldown: {total_wait}s")
+                                results['message'] = f"Cooldown {total_wait}s"
+                                return results
+                        
+                        results['errors'].append("Không tìm thấy nút submit")
                         break
                         
                 except Exception as e:
@@ -434,7 +589,7 @@ class ZefoyBot:
         return results
 
 # ============================================================
-# HTML TEMPLATE - GIAO DIỆN GIỐNG BUFF.PY
+# HTML TEMPLATE - VỚI COMBOBOX ĐỘNG
 # ============================================================
 INDEX_HTML = """
 <!DOCTYPE html>
@@ -444,7 +599,6 @@ INDEX_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🔮 Zefoy Bot - TikTok Tool</title>
     <style>
-        /* ===== RESET ===== */
         * { margin: 0; padding: 0; box-sizing: border-box; }
         @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
         
@@ -717,7 +871,7 @@ INDEX_HTML = """
         
         .services-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
             gap: 15px;
             margin: 15px 0;
         }
@@ -828,6 +982,21 @@ INDEX_HTML = """
         }
         .logs-actions { display: flex; gap: 8px; }
         
+        .service-select-wrapper {
+            position: relative;
+        }
+        .service-select-wrapper select {
+            padding-right: 40px;
+        }
+        .service-select-wrapper .badge-count {
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 0.7em;
+        }
+        
         @media (max-width: 768px) {
             .container { margin: 10px; padding: 15px; }
             .glitch { font-size: 2em; }
@@ -912,7 +1081,7 @@ INDEX_HTML = """
         <!-- TAB SERVICES -->
         <div class="tab-content" id="tab-services">
             <div class="config-section">
-                <h3>📋 Danh sách dịch vụ</h3>
+                <h3>📋 Danh sách dịch vụ từ Zefoy</h3>
                 <button class="btn btn-secondary" onclick="loadServices()" style="margin-bottom:15px;">🔄 Tải danh sách</button>
                 <div id="servicesContainer">
                     <div style="color:var(--text-muted);text-align:center;padding:20px;">
@@ -922,7 +1091,7 @@ INDEX_HTML = """
             </div>
         </div>
 
-        <!-- TAB BOOST -->
+        <!-- TAB BOOST - COMBOBOX ĐỘNG -->
         <div class="tab-content" id="tab-boost">
             <div class="boost-section">
                 <h3>🚀 Thực hiện Boost</h3>
@@ -933,16 +1102,14 @@ INDEX_HTML = """
                 </div>
                 <div class="form-group">
                     <label for="serviceSelect">🎯 Dịch vụ</label>
-                    <select id="serviceSelect">
-                        <option value="followers">👥 Followers</option>
-                        <option value="hearts">❤️ Hearts (Likes)</option>
-                        <option value="views">👁️ Views</option>
-                        <option value="comments">💬 Comments</option>
-                        <option value="shares">🔄 Shares</option>
-                        <option value="favorites">⭐ Favorites</option>
-                        <option value="live">🔴 Live Stream</option>
-                    </select>
-                    <small>Chọn dịch vụ muốn tăng (phải khớp với tên trên Zefoy)</small>
+                    <div class="service-select-wrapper">
+                        <select id="serviceSelect">
+                            <option value="">-- Chọn dịch vụ --</option>
+                            <option value="loading" disabled>🔄 Đang tải...</option>
+                        </select>
+                        <span class="badge-count" id="serviceBadge">0 dịch vụ</span>
+                    </div>
+                    <small>Danh sách được lấy trực tiếp từ Zefoy, <a href="#" onclick="loadServicesAndUpdateSelect(); return false;" style="color:var(--secondary);">bấm để tải lại</a></small>
                 </div>
                 <div class="form-group">
                     <label for="maxRuns">🔢 Số lượt chạy</label>
@@ -1024,7 +1191,8 @@ INDEX_HTML = """
             totalRuns: 0,
             successRuns: 0,
             failRuns: 0,
-            logs: []
+            logs: [],
+            services: []
         };
         
         const $ = id => document.getElementById(id);
@@ -1043,6 +1211,7 @@ INDEX_HTML = """
         const progressFill = $('progressFill');
         const progressText = $('progressText');
         const servicesContainer = $('servicesContainer');
+        const serviceBadge = $('serviceBadge');
 
         // ===== TABS =====
         document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -1108,7 +1277,112 @@ INDEX_HTML = """
             runCount.textContent = state.totalRuns;
         }
 
-        // ===== API =====
+        // ===== CẬP NHẬT COMBOBOX =====
+        function updateServiceSelect(services) {
+            // Lưu services vào state
+            state.services = services || [];
+            
+            // Clear select
+            serviceSelect.innerHTML = '';
+            
+            if (!services || services.length === 0) {
+                serviceSelect.innerHTML = '<option value="">-- Không có dịch vụ --</option>';
+                serviceBadge.textContent = '0 dịch vụ';
+                return;
+            }
+            
+            // Thêm option mặc định
+            const defaultOpt = document.createElement('option');
+            defaultOpt.value = '';
+            defaultOpt.textContent = '-- Chọn dịch vụ --';
+            serviceSelect.appendChild(defaultOpt);
+            
+            // Thêm các dịch vụ
+            let count = 0;
+            services.forEach(s => {
+                if (s.active) {
+                    const opt = document.createElement('option');
+                    opt.value = s.name;
+                    opt.textContent = '🟢 ' + s.name + ' (' + s.status + ')';
+                    serviceSelect.appendChild(opt);
+                    count++;
+                } else {
+                    const opt = document.createElement('option');
+                    opt.value = s.name;
+                    opt.textContent = '🔴 ' + s.name + ' (OFFLINE)';
+                    opt.style.color = '#ff2e63';
+                    serviceSelect.appendChild(opt);
+                }
+            });
+            
+            serviceBadge.textContent = count + ' dịch vụ online';
+            addLog('📋 Đã cập nhật combobox với ' + count + ' dịch vụ online', 'system');
+        }
+
+        // ===== TẢI SERVICES VÀ CẬP NHẬT COMBOBOX =====
+        async function loadServicesAndUpdateSelect() {
+            const cookie = cookieInput.value.trim();
+            if (!cookie) {
+                showResult(configResult, '⚠️ Vui lòng nhập Cookie trước!', 'error');
+                document.querySelector('[data-tab="config"]').click();
+                return;
+            }
+            
+            showResult(configResult, '⏳ Đang tải danh sách dịch vụ...', 'info');
+            
+            try {
+                const res = await fetch('/api/services', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        cookie_string: cookie,
+                        user_agent: uaInput.value.trim()
+                    })
+                });
+                const data = await res.json();
+                
+                if (data.success) {
+                    // Cập nhật combobox
+                    updateServiceSelect(data.data);
+                    
+                    // Cập nhật tab services
+                    renderServices(data.data);
+                    
+                    // Cập nhật status
+                    updateStatus(true, data.data.length);
+                    
+                    showResult(configResult, '✅ Đã tải ' + data.data.length + ' dịch vụ', 'success');
+                    addLog('✅ Đã tải ' + data.data.length + ' dịch vụ', 'success');
+                } else {
+                    showResult(configResult, '❌ ' + data.message, 'error');
+                    addLog('❌ Lỗi tải services: ' + data.message, 'error');
+                }
+            } catch (e) {
+                showResult(configResult, '❌ Lỗi: ' + e.message, 'error');
+                addLog('❌ Lỗi: ' + e.message, 'error');
+            }
+        }
+
+        // ===== RENDER SERVICES =====
+        function renderServices(services) {
+            if (!services || services.length === 0) {
+                servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;">Không có dịch vụ nào</div>';
+                return;
+            }
+            let html = '<div class="services-grid">';
+            services.forEach(s => {
+                const statusClass = s.active ? 'online' : 'offline';
+                const statusText = s.active ? '🟢 ONLINE' : '🔴 OFFLINE';
+                html += '<div class="service-card">';
+                html += '<div class="name">' + s.name + '</div>';
+                html += '<div class="status ' + statusClass + '">' + statusText + ' (' + s.status + ')</div>';
+                html += '</div>';
+            });
+            html += '</div>';
+            servicesContainer.innerHTML = html;
+        }
+
+        // ===== API CALLS =====
         async function saveConfig() {
             const cookie = cookieInput.value.trim();
             const ua = uaInput.value.trim();
@@ -1127,7 +1401,7 @@ INDEX_HTML = """
                 if (data.success) {
                     showResult(configResult, '✅ Lưu cấu hình thành công!', 'success');
                     addLog('✅ Đã lưu cấu hình mới', 'success');
-                    await testConnection();
+                    await loadServicesAndUpdateSelect();
                 } else {
                     showResult(configResult, '❌ ' + data.message, 'error');
                     addLog('❌ Lỗi lưu config: ' + data.message, 'error');
@@ -1154,12 +1428,12 @@ INDEX_HTML = """
                 });
                 const data = await res.json();
                 if (data.success) {
+                    // Cập nhật combobox
+                    updateServiceSelect(data.services_list);
+                    renderServices(data.services_list);
                     updateStatus(true, data.services || 0);
                     showResult(configResult, '✅ Kết nối thành công! ' + (data.services || 0) + ' dịch vụ.', 'success');
                     addLog('✅ Kết nối thành công, ' + (data.services || 0) + ' dịch vụ', 'success');
-                    if (data.services_list) {
-                        renderServices(data.services_list);
-                    }
                 } else {
                     updateStatus(false);
                     showResult(configResult, '❌ ' + data.message, 'error');
@@ -1178,60 +1452,16 @@ INDEX_HTML = """
             uaInput.value = '';
             hideResult(configResult);
             updateStatus(false);
+            serviceSelect.innerHTML = '<option value="">-- Chọn dịch vụ --</option>';
+            serviceBadge.textContent = '0 dịch vụ';
             addLog('🗑️ Đã xóa cấu hình', 'system');
         }
 
         async function loadServices() {
-            const cookie = cookieInput.value.trim();
-            if (!cookie) {
-                showResult(configResult, '⚠️ Vui lòng nhập Cookie trước!', 'error');
-                document.querySelector('[data-tab="config"]').click();
-                return;
-            }
-            showResult(configResult, '⏳ Đang tải danh sách dịch vụ...', 'info');
-            try {
-                const res = await fetch('/api/services', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        cookie_string: cookie,
-                        user_agent: uaInput.value.trim()
-                    })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    renderServices(data.data);
-                    updateStatus(true, data.data.length);
-                    showResult(configResult, '✅ Đã tải ' + data.data.length + ' dịch vụ', 'success');
-                    addLog('✅ Đã tải ' + data.data.length + ' dịch vụ', 'success');
-                } else {
-                    showResult(configResult, '❌ ' + data.message, 'error');
-                    addLog('❌ Lỗi tải services: ' + data.message, 'error');
-                }
-            } catch (e) {
-                showResult(configResult, '❌ Lỗi: ' + e.message, 'error');
-                addLog('❌ Lỗi: ' + e.message, 'error');
-            }
+            await loadServicesAndUpdateSelect();
         }
 
-        function renderServices(services) {
-            if (!services || services.length === 0) {
-                servicesContainer.innerHTML = '<div style="color:var(--text-muted);text-align:center;padding:20px;">Không có dịch vụ nào</div>';
-                return;
-            }
-            let html = '<div class="services-grid">';
-            services.forEach(s => {
-                const statusClass = s.active ? 'online' : 'offline';
-                const statusText = s.active ? '🟢 ONLINE' : '🔴 OFFLINE';
-                html += '<div class="service-card">';
-                html += '<div class="name">' + s.name + '</div>';
-                html += '<div class="status ' + statusClass + '">' + statusText + ' (' + s.status + ')</div>';
-                html += '</div>';
-            });
-            html += '</div>';
-            servicesContainer.innerHTML = html;
-        }
-
+        // ===== START BOOST =====
         async function startBoost() {
             if (state.isRunning) {
                 addLog('⚠️ Bot đang chạy!', 'warning');
@@ -1252,6 +1482,11 @@ INDEX_HTML = """
             }
             
             const service = serviceSelect.value;
+            if (!service) {
+                showResult(boostResult, '⚠️ Chọn dịch vụ!', 'error');
+                return;
+            }
+            
             const runs = parseInt(maxRuns.value) || 10;
             
             state.isRunning = true;
@@ -1332,7 +1567,11 @@ INDEX_HTML = """
                         addLog('📂 Đã tải cấu hình từ server', 'system');
                     }
                     if (data.user_agent) uaInput.value = data.user_agent;
-                    if (data.cookie_string) testConnection();
+                    if (data.cookie_string) {
+                        setTimeout(() => {
+                            testConnection();
+                        }, 500);
+                    }
                 })
                 .catch(() => {});
         };
