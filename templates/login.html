@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ACCESS TERMINAL — Zefoy Buff</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="min-h-screen text-slate-100 flex items-center justify-center px-4 relative overflow-hidden scanlines" style="background:#05060d">
+  <div class="absolute inset-0 -z-10 bg-gradient-to-br from-[#0b0f2a] via-[#05060d] to-[#1a0426]"></div>
+  <div class="absolute inset-0 -z-10 grid-bg opacity-70"></div>
+  <div class="absolute -top-24 -left-24 w-96 h-96 rounded-full bg-cyan-500/25 blur-3xl float-y"></div>
+  <div class="absolute -bottom-24 -right-24 w-[28rem] h-[28rem] rounded-full bg-fuchsia-500/25 blur-3xl float-y" style="animation-delay:-2s"></div>
+
+  <div class="relative w-full max-w-md">
+    <div class="mb-6 text-center">
+      <div class="mx-auto hex-badge h-16 w-16 bg-gradient-to-tr from-cyan-400 via-indigo-500 to-fuchsia-500 flex items-center justify-center pulse-neon">
+        <span class="font-display font-black text-2xl">Z</span>
+      </div>
+      <h1 class="mt-4 font-display text-2xl font-black tracking-widest">ZEFOY // ACCESS</h1>
+      <p class="mt-1 text-xs text-cyan-300/80 uppercase tracking-[.3em]">Operator Terminal · v2.0</p>
+    </div>
+
+    <div class="glass neon-border rounded-2xl p-7">
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <div class="chip text-[10px] text-cyan-300">SECURE CHANNEL</div>
+          <h2 class="text-lg font-bold mt-1">Insert Access Key</h2>
+        </div>
+        <div class="flex items-center gap-2 text-xs text-emerald-300">
+          <span class="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_#34d399] animate-pulse"></span>
+          ONLINE
+        </div>
+      </div>
+
+      <form id="loginForm" class="space-y-4">
+        <div>
+          <label class="block text-[11px] uppercase tracking-widest text-slate-400 mb-2">Access Key</label>
+          <input id="key" type="text" autocomplete="off" required
+            class="w-full rounded-lg bg-black/40 border border-cyan-500/30 px-4 py-3 font-mono text-sm outline-none focus:border-fuchsia-400 focus:ring-2 focus:ring-fuchsia-500/40 transition"
+            placeholder="XXXX-XXXX-XXXX-XXXX" />
+        </div>
+        <button type="submit"
+          class="w-full rounded-lg neon-btn py-3 font-display font-bold tracking-widest text-white text-sm">
+          &gt; AUTHENTICATE
+        </button>
+        <p id="err" class="hidden text-sm text-rose-400 text-center"></p>
+      </form>
+
+      <div class="mt-6 grid grid-cols-3 gap-2 text-center">
+        <div class="rounded-lg bg-white/5 border border-white/10 p-2">
+          <div class="chip text-[9px] text-cyan-300">NODES</div>
+          <div class="font-display text-sm mt-1">08</div>
+        </div>
+        <div class="rounded-lg bg-white/5 border border-white/10 p-2">
+          <div class="chip text-[9px] text-fuchsia-300">LATENCY</div>
+          <div class="font-display text-sm mt-1">12ms</div>
+        </div>
+        <div class="rounded-lg bg-white/5 border border-white/10 p-2">
+          <div class="chip text-[9px] text-lime-300">UPTIME</div>
+          <div class="font-display text-sm mt-1">99.9%</div>
+        </div>
+      </div>
+    </div>
+
+    <p class="mt-6 text-center text-[10px] uppercase tracking-[.35em] text-slate-500">© 2025 · Dev Auza · Restricted</p>
+  </div>
+
+  <!-- Loading overlay -->
+  <div id="overlay" class="hidden fixed inset-0 z-50 items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div class="flex flex-col items-center gap-4">
+      <div class="loader-orb"></div>
+      <div class="font-display text-xs tracking-[.4em] text-cyan-300">HANDSHAKING…</div>
+    </div>
+  </div>
+
+<script>
+const form=document.getElementById('loginForm'), err=document.getElementById('err'), ov=document.getElementById('overlay');
+form.addEventListener('submit', async (e)=>{
+  e.preventDefault(); err.classList.add('hidden');
+  const key=document.getElementById('key').value.trim();
+  ov.classList.remove('hidden'); ov.classList.add('flex');
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
+    const j=await r.json();
+    if(j.ok){ location='/dashboard'; return; }
+    err.textContent=j.error||'Access denied'; err.classList.remove('hidden');
+  }catch(x){ err.textContent='Network error: '+x.message; err.classList.remove('hidden'); }
+  finally{ ov.classList.add('hidden'); ov.classList.remove('flex'); }
+});
+</script>
+</body>
+</html>
