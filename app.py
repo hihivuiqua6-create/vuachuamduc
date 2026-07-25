@@ -1,24 +1,28 @@
 """
-Zefoy Web API — Render-ready FastAPI wrapper (UPDATED with new logic + Telegram Bot)
+Zefoy Web API — Render-ready FastAPI wrapper (UPDATED with new logic)
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import os
 import re
+import random
 import time
 import uuid
 import json
 import urllib.parse
+from string import ascii_letters, digits
 from typing import Any, Optional
+from urllib.parse import unquote
 from datetime import datetime
 import threading
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from bs4 import BeautifulSoup
 import requests
@@ -31,16 +35,7 @@ DEFAULT_USER_AGENT = (
 )
 DEFAULT_BASE_URL = "https://zefoy.com"
 
-# Telegram Config
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHANNEL_LINK = os.environ.get("TELEGRAM_CHANNEL_LINK", "https://t.me/your_channel")
-ADMIN_IDS = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(",") if id.strip()]
-
-# Database files
-DB_FILE = "telegram_users.json"
-TELECONFIG_FILE = "telegram_config.json"
-
-app = FastAPI(title="Zefoy Web API + Telegram Bot", version="3.0.0")
+app = FastAPI(title="Zefoy Web API", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,9 +44,11 @@ app.add_middleware(
 )
 
 import traceback
+from fastapi.responses import JSONResponse
+from fastapi.requests import Request as _Req
 
 @app.exception_handler(Exception)
-async def _all_ex(request: Request, exc: Exception):
+async def _all_ex(request: _Req, exc: Exception):
     tb = traceback.format_exc()
     print("[UNHANDLED]", tb, flush=True)
     return JSONResponse(
@@ -62,426 +59,7 @@ async def _all_ex(request: Request, exc: Exception):
         },
     )
 
-# ============== DATABASE ==============
-class UserDB:
-    def __init__(self):
-        self.data = self._load()
-        self._lock = threading.Lock()
-    
-    def _load(self) -> dict:
-        if os.path.exists(DB_FILE):
-            try:
-                with open(DB_FILE, 'r') as f:
-                    return json.load(f)
-            except:
-                return {}
-        return {}
-    
-    def _save(self):
-        with self._lock:
-            with open(DB_FILE, 'w') as f:
-                json.dump(self.data, f, indent=2)
-    
-    def get(self, user_id: str) -> dict:
-        return self.data.get(user_id, {})
-    
-    def update(self, user_id: str, data: dict):
-        self.data[user_id] = data
-        self._save()
-    
-    def get_daily_usage(self, user_id: str) -> int:
-        user = self.get(user_id)
-        today = datetime.now().strftime("%Y-%m-%d")
-        if user.get("last_date") != today:
-            return 0
-        return user.get("daily_usage", 0)
-    
-    def increment_daily(self, user_id: str) -> int:
-        user = self.get(user_id)
-        today = datetime.now().strftime("%Y-%m-%d")
-        if user.get("last_date") != today:
-            user["daily_usage"] = 0
-            user["last_date"] = today
-        user["daily_usage"] = user.get("daily_usage", 0) + 1
-        user["total_usage"] = user.get("total_usage", 0) + 1
-        user["last_used"] = datetime.now().isoformat()
-        self.update(user_id, user)
-        return user["daily_usage"]
-    
-    def is_admin(self, user_id: str) -> bool:
-        return int(user_id) in ADMIN_IDS
-
-db = UserDB()
-
-# ============== TELEGRAM BOT ==============
-class ZefoyTelegramBot:
-    def __init__(self, token: str):
-        self.token = token
-        self.base_url = f"https://api.telegram.org/bot{token}"
-        self.channel_link = TELEGRAM_CHANNEL_LINK
-        self.channel_username = self._extract_channel_username()
-        self.running = False
-        self.update_id = 0
-        self.pending_sessions = {}
-        self._handlers = {}
-        self.API_URL = os.environ.get("API_URL", "https://your-app.onrender.com")
-    
-    def _extract_channel_username(self) -> str:
-        match = re.search(r"t\.me/([^/\s?]+)", self.channel_link)
-        if match:
-            return match.group(1)
-        return self.channel_link.replace("https://t.me/", "").strip()
-    
-    def _request(self, method: str, data: dict = None) -> dict:
-        try:
-            url = f"{self.base_url}/{method}"
-            resp = requests.post(url, json=data, timeout=30)
-            return resp.json()
-        except Exception as e:
-            print(f"Telegram API error: {e}")
-            return {"ok": False}
-    
-    def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML") -> bool:
-        data = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
-        result = self._request("sendMessage", data)
-        return result.get("ok", False)
-    
-    def send_photo(self, chat_id: int, photo_base64: str, caption: str = "") -> bool:
-        try:
-            data = {
-                "chat_id": chat_id,
-                "photo": photo_base64,
-                "caption": caption,
-                "parse_mode": "HTML"
-            }
-            result = self._request("sendPhoto", data)
-            return result.get("ok", False)
-        except:
-            return False
-    
-    def is_member(self, user_id: int) -> bool:
-        try:
-            data = {"chat_id": f"@{self.channel_username}", "user_id": user_id}
-            result = self._request("getChatMember", data)
-            if result.get("ok"):
-                status = result.get("result", {}).get("status", "")
-                return status in ["member", "administrator", "creator"]
-            return False
-        except:
-            return False
-    
-    def broadcast(self, text: str) -> int:
-        sent = 0
-        for uid in db.data.keys():
-            try:
-                if self.send_message(int(uid), f"📢 {text}"):
-                    sent += 1
-                time.sleep(0.1)
-            except:
-                pass
-        return sent
-    
-    def process_update(self, update: dict):
-        if "message" not in update:
-            return
-        
-        msg = update["message"]
-        chat_id = msg["chat"]["id"]
-        user_id = str(msg["from"]["id"])
-        username = msg["from"].get("username", "unknown")
-        text = msg.get("text", "")
-        
-        if not self.is_member(chat_id):
-            self.send_message(
-                chat_id,
-                f"❌ Bạn cần tham gia kênh {self.channel_link} để dùng bot!\n"
-                f"📌 Sau khi tham gia, gửi /start lại."
-            )
-            return
-        
-        if text.startswith("/"):
-            self._handle_command(chat_id, user_id, username, text)
-        else:
-            self._handle_buff(chat_id, user_id, username, text)
-    
-    def _handle_command(self, chat_id: int, user_id: str, username: str, text: str):
-        cmd = text.split()[0].lower()
-        
-        if cmd == "/start":
-            daily = db.get_daily_usage(user_id)
-            total = db.get(user_id).get("total_usage", 0)
-            msg = (
-                f"🤖 <b>Zefoy Buff Bot</b>\n\n"
-                f"👤 User: @{username}\n"
-                f"📊 Hôm nay: {daily}/15 lượt\n"
-                f"📈 Tổng: {total} lượt\n\n"
-                f"<b>Cách dùng:</b>\n"
-                f"Gửi link TikTok + dịch vụ\n"
-                f"Ví dụ: <code>https://tiktok.com/... hearts</code>\n\n"
-                f"<b>Dịch vụ:</b> hearts, views, followers, shares, comments\n"
-                f"📌 Cần tham gia {self.channel_link} để dùng bot!"
-            )
-            self.send_message(chat_id, msg)
-            
-        elif cmd == "/help":
-            msg = (
-                f"📖 <b>Hướng dẫn</b>\n\n"
-                f"/start - Xem thông tin\n"
-                f"/help - Hướng dẫn này\n"
-                f"/stats - Thống kê (admin)\n"
-                f"/broadcast - Gửi tin (admin)\n"
-                f"/reset - Reset user (admin)\n\n"
-                f"<b>Buff:</b>\n"
-                f"<code>https://tiktok.com/... hearts</code>"
-            )
-            self.send_message(chat_id, msg)
-            
-        elif cmd == "/stats" and db.is_admin(user_id):
-            total_users = len(db.data)
-            total_usage = sum(u.get("total_usage", 0) for u in db.data.values())
-            today_usage = sum(1 for u in db.data.values() if u.get("last_date") == datetime.now().strftime("%Y-%m-%d"))
-            msg = (
-                f"📊 <b>Bot Stats</b>\n\n"
-                f"👥 Users: {total_users}\n"
-                f"📈 Total buffs: {total_usage}\n"
-                f"📅 Today: {today_usage}\n"
-                f"🟢 Status: Online"
-            )
-            self.send_message(chat_id, msg)
-            
-        elif cmd == "/broadcast" and db.is_admin(user_id):
-            if len(text.split()) > 1:
-                broadcast_text = text.split(" ", 1)[1]
-                sent = self.broadcast(broadcast_text)
-                self.send_message(chat_id, f"✅ Đã gửi broadcast tới {sent} users")
-            else:
-                self.send_message(chat_id, "⚠️ /broadcast <nội dung>")
-        
-        elif cmd == "/reset" and db.is_admin(user_id):
-            parts = text.split()
-            if len(parts) == 2:
-                target = parts[1]
-                user_data = db.get(target)
-                if user_data:
-                    user_data["daily_usage"] = 0
-                    user_data["last_date"] = ""
-                    db.update(target, user_data)
-                    self.send_message(chat_id, f"✅ Đã reset user {target}")
-                else:
-                    self.send_message(chat_id, f"❌ Không tìm thấy user {target}")
-            else:
-                self.send_message(chat_id, "⚠️ /reset <user_id>")
-        
-        elif cmd == "/captcha":
-            self._handle_captcha(chat_id, user_id, text)
-        else:
-            self.send_message(chat_id, f"❌ Lệnh không hợp lệ. Gửi /help")
-    
-    def _handle_captcha(self, chat_id: int, user_id: str, text: str):
-        parts = text.split()
-        if len(parts) < 2:
-            self.send_message(chat_id, "⚠️ /captcha <mã>")
-            return
-        
-        answer = parts[1]
-        pending = self.pending_sessions.get(user_id)
-        if not pending:
-            self.send_message(chat_id, "❌ Không có session đang chờ")
-            return
-        
-        session_id = pending["session_id"]
-        service = pending["service"]
-        url = pending["url"]
-        
-        try:
-            solve_resp = requests.post(
-                f"{self.API_URL}/api/solve",
-                json={"session_id": session_id, "answer": answer},
-                timeout=30
-            )
-            if solve_resp.status_code != 200:
-                self.send_message(chat_id, "❌ Lỗi gửi captcha")
-                return
-            
-            solve_data = solve_resp.json()
-            if not solve_data.get("ok"):
-                self.send_message(chat_id, "❌ Captcha sai, thử lại!")
-                return
-            
-            run_resp = requests.post(
-                f"{self.API_URL}/api/run",
-                json={"session_id": session_id, "service": service.capitalize(), "url": url},
-                timeout=60
-            )
-            if run_resp.status_code == 200:
-                result = run_resp.json()
-                if result.get("ok"):
-                    amount = result.get("amount", 0)
-                    db.increment_daily(user_id)
-                    total = db.get(user_id).get("total_usage", 0)
-                    msg = (
-                        f"✅ <b>Buff thành công!</b>\n\n"
-                        f"📊 +{amount} {service}\n"
-                        f"📅 Hôm nay: {db.get_daily_usage(user_id)}/15\n"
-                        f"📈 Tổng: {total}\n"
-                        f"🔗 {url}"
-                    )
-                    self.send_message(chat_id, msg)
-                    del self.pending_sessions[user_id]
-                else:
-                    cooldown = result.get("cooldown")
-                    if cooldown:
-                        self.send_message(chat_id, f"⏳ Cooldown {cooldown}s")
-                    else:
-                        self.send_message(chat_id, f"❌ {result.get('message', 'Lỗi')}")
-            else:
-                self.send_message(chat_id, "❌ Lỗi khi buff")
-        except Exception as e:
-            self.send_message(chat_id, f"❌ Lỗi: {str(e)}")
-    
-    def _handle_buff(self, chat_id: int, user_id: str, username: str, text: str):
-        daily = db.get_daily_usage(user_id)
-        if daily >= 15:
-            self.send_message(
-                chat_id,
-                f"❌ Hết 15 lượt hôm nay!\n"
-                f"📊 {daily}/15 - Đợi ngày mai nhé!"
-            )
-            return
-        
-        services = ["hearts", "views", "followers", "shares", "comments", "favorites"]
-        service = None
-        for svc in services:
-            if svc in text.lower():
-                service = svc
-                break
-        
-        if not service:
-            self.send_message(
-                chat_id,
-                f"❌ Không tìm thấy dịch vụ.\n"
-                f"Dịch vụ: {', '.join(services)}\n"
-                f"Ví dụ: <code>https://tiktok.com/... hearts</code>"
-            )
-            return
-        
-        url_match = re.search(r"https?://[^\s]+", text)
-        if not url_match:
-            self.send_message(chat_id, "❌ Không tìm thấy link TikTok")
-            return
-        
-        url = url_match.group(0)
-        self.send_message(chat_id, f"⏳ Đang buff {service}...")
-        
-        try:
-            start_resp = requests.post(f"{self.API_URL}/api/start", json={}, timeout=30)
-            if start_resp.status_code != 200:
-                self.send_message(chat_id, "❌ Lỗi kết nối server")
-                return
-            
-            session_data = start_resp.json()
-            session_id = session_data.get("session_id")
-            captcha_b64 = session_data.get("captcha_b64")
-            
-            if captcha_b64:
-                # Try auto OCR
-                try:
-                    from zefoy.ocr import solve_with_fallbacks
-                    import base64 as b64
-                    img_bytes = b64.b64decode(captcha_b64)
-                    answer = solve_with_fallbacks(img_bytes)
-                    
-                    solve_resp = requests.post(
-                        f"{self.API_URL}/api/solve",
-                        json={"session_id": session_id, "answer": answer},
-                        timeout=30
-                    )
-                    if solve_resp.status_code == 200:
-                        solve_data = solve_resp.json()
-                        if solve_data.get("ok"):
-                            run_resp = requests.post(
-                                f"{self.API_URL}/api/run",
-                                json={"session_id": session_id, "service": service.capitalize(), "url": url},
-                                timeout=60
-                            )
-                            if run_resp.status_code == 200:
-                                result = run_resp.json()
-                                if result.get("ok"):
-                                    amount = result.get("amount", 0)
-                                    db.increment_daily(user_id)
-                                    total = db.get(user_id).get("total_usage", 0)
-                                    msg = (
-                                        f"✅ <b>Buff thành công!</b>\n\n"
-                                        f"📊 +{amount} {service}\n"
-                                        f"📅 Hôm nay: {db.get_daily_usage(user_id)}/15\n"
-                                        f"📈 Tổng: {total}\n"
-                                        f"🔗 {url}"
-                                    )
-                                    self.send_message(chat_id, msg)
-                                else:
-                                    cooldown = result.get("cooldown")
-                                    if cooldown:
-                                        self.send_message(chat_id, f"⏳ Cooldown {cooldown}s")
-                                    else:
-                                        self.send_message(chat_id, f"❌ {result.get('message', 'Lỗi')}")
-                            else:
-                                self.send_message(chat_id, "❌ Lỗi khi buff")
-                            return
-                except Exception as e:
-                    print(f"OCR error: {e}")
-                    pass
-                
-                # Send captcha to user
-                self.send_photo(
-                    chat_id,
-                    f"data:image/png;base64,{captcha_b64}",
-                    f"🔐 Nhập captcha này:\nGửi /captcha <mã> để tiếp tục"
-                )
-                self.pending_sessions[user_id] = {
-                    "session_id": session_id,
-                    "service": service,
-                    "url": url
-                }
-                return
-            
-            self.send_message(chat_id, "❌ Không lấy được captcha")
-        except Exception as e:
-            self.send_message(chat_id, f"❌ Lỗi: {str(e)}")
-    
-    def run(self):
-        self.running = True
-        print(f"🤖 Bot started! Channel: {self.channel_link}")
-        print(f"👑 Admins: {ADMIN_IDS}")
-        print(f"🔗 API: {self.API_URL}")
-        
-        while self.running:
-            try:
-                data = {"offset": self.update_id, "timeout": 30}
-                resp = self._request("getUpdates", data)
-                
-                if resp.get("ok"):
-                    for update in resp.get("result", []):
-                        self.update_id = update["update_id"] + 1
-                        self.process_update(update)
-                else:
-                    time.sleep(5)
-            except Exception as e:
-                print(f"Bot error: {e}")
-                time.sleep(5)
-    
-    def stop(self):
-        self.running = False
-
-# Start bot instance
-_bot_instance = None
-
-def get_bot():
-    global _bot_instance
-    if _bot_instance is None and TELEGRAM_BOT_TOKEN:
-        _bot_instance = ZefoyTelegramBot(TELEGRAM_BOT_TOKEN)
-    return _bot_instance
-
-# ============== SESSION STORE ==============
+# ─────────── session store ────────────
 SESSIONS: dict[str, dict[str, Any]] = {}
 SESSION_TTL = 60 * 30
 
@@ -520,6 +98,7 @@ def _gc():
 # ============== CORE LOGIC ==============
 
 def _init_session(st: dict[str, Any]) -> None:
+    """Initialize Zefoy session with cookies"""
     session = st["session"]
     session.verify = False
     session.headers.update({
@@ -546,6 +125,7 @@ def _init_session(st: dict[str, Any]) -> None:
     st["initialized"] = True
 
 def _get_captcha_image(st: dict[str, Any]) -> bytes:
+    """Fetch captcha image from Zefoy"""
     session = st["session"]
     base_url = st["base_url"]
     user_agent = st["user_agent"]
@@ -595,6 +175,7 @@ def _get_captcha_image(st: dict[str, Any]) -> bytes:
     return resp.content
 
 def _build_captcha_encoded(st: dict[str, Any]) -> str:
+    """Build captcha_encoded fingerprint"""
     user_agent = st["user_agent"]
     
     fingerprint = {
@@ -628,6 +209,7 @@ def _build_captcha_encoded(st: dict[str, Any]) -> str:
     return base64.b64encode(plaintext.encode()).decode()
 
 def _submit_captcha(st: dict[str, Any], answer: str) -> bool:
+    """Submit captcha answer to Zefoy"""
     session = st["session"]
     base_url = st["base_url"]
     
@@ -662,6 +244,7 @@ def _submit_captcha(st: dict[str, Any], answer: str) -> bool:
     return False
 
 def _refresh_services(st: dict[str, Any]) -> None:
+    """Refresh service list from Zefoy homepage"""
     session = st["session"]
     base_url = st["base_url"]
     
@@ -749,6 +332,7 @@ def _refresh_services(st: dict[str, Any]) -> None:
     st["service_map"] = service_map
 
 def _decode_response(text: str) -> str:
+    """Decode Zefoy response (multi-layer)"""
     text = text.strip()
     if not text:
         return text
@@ -790,6 +374,7 @@ def _decode_response(text: str) -> str:
     return text
 
 def _extract_timer(html: str) -> Optional[int]:
+    """Extract cooldown timer from HTML"""
     if not html:
         return None
     
@@ -819,6 +404,7 @@ def _extract_timer(html: str) -> Optional[int]:
     return None
 
 def _parse_result(html: str) -> tuple[Optional[int], Optional[str], Optional[str]]:
+    """Parse amount from response"""
     if not html:
         return None, None, None
     
@@ -849,6 +435,7 @@ def _parse_result(html: str) -> tuple[Optional[int], Optional[str], Optional[str
     return None, None, None
 
 def _perform_action(st: dict[str, Any], service: str, url: str) -> dict[str, Any]:
+    """Perform buff action with cooldown tracking"""
     session = st["session"]
     base_url = st["base_url"]
     service_map = st.get("service_map", {})
@@ -1024,424 +611,153 @@ class RunReq(BaseModel):
     service: str
     url: str
 
-class TelegramConfigReq(BaseModel):
-    bot_token: str
-    channel_link: str
-    admin_ids: str
+# ============== Routes ==============
 
-# ============== HTML ==============
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Zefoy Buff Panel Pro</title>
-<style>
-:root{--bg:#0a0a1a;--card:#12122a;--fg:#e8ecff;--mut:#9aa3c7;--pri:#6c8cff;--ok:#37d67a;--err:#ff5c7a;--bd:#2a2f4f;--gold:#ffd700}
-*{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
-.wrap{max-width:840px;margin:24px auto;padding:0 16px}
-h1{font-size:22px;margin:0 0 16px;background:linear-gradient(135deg,#6c8cff,#ff6b6b);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-h2{font-size:15px;margin:0 0 10px;color:var(--pri)}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:20px;margin-bottom:14px;transition:all .3s}
-.card:hover{border-color:var(--pri)}
-.btn{background:var(--pri);color:#fff;border:0;padding:10px 18px;border-radius:10px;cursor:pointer;font-weight:600;transition:all .2s}
-.btn:hover{transform:translateY(-2px);box-shadow:0 4px 20px rgba(108,140,255,.3)}
-.btn.ghost{background:transparent;border:1px solid var(--bd);color:var(--fg)}
-.btn.ghost:hover{background:var(--bd)}
-.btn.ok{background:var(--ok)}
-.btn.ok:hover{box-shadow:0 4px 20px rgba(55,214,122,.3)}
-.btn.gold{background:var(--gold);color:#000}
-.btn.gold:hover{box-shadow:0 4px 20px rgba(255,215,0,.4)}
-.btn.danger{background:var(--err)}
-.btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
-input,select{background:#0f1220;color:var(--fg);border:1px solid var(--bd);padding:10px 14px;border-radius:10px;width:100%;font-size:14px;transition:border .3s}
-input:focus,select:focus{outline:none;border-color:var(--pri)}
-.row{display:flex;gap:8px;margin:8px 0}.row>*{flex:1}
-.captcha{background:#fff;padding:10px;border-radius:12px;display:inline-block}
-.captcha img{display:block;max-width:220px;border-radius:6px}
-.mut{color:var(--mut);font-size:13px}.hidden{display:none}
-.stat{display:inline-block;background:#0f1220;border:1px solid var(--bd);padding:10px 16px;border-radius:10px;margin:4px 6px 0 0}
-.stat b{color:var(--pri)}
-.stat.gold b{color:var(--gold)}
-#log{max-height:260px;overflow:auto;font-size:12px;background:#0a0a1a;padding:10px;border-radius:10px;border:1px solid var(--bd);white-space:pre-wrap;font-family:monospace}
-#log .err{color:var(--err)}#log .ok{color:var(--ok)}#log .info{color:var(--mut)}#log .gold{color:var(--gold)}
-.telegram-card{background:linear-gradient(135deg,#1a2a4a,#0a1a3a);border:2px solid #0088cc}
-.telegram-card h2{color:#0088cc}
-.status-badge{display:inline-block;padding:3px 12px;border-radius:20px;font-size:12px;font-weight:600}
-.status-badge.on{background:#37d67a20;color:#37d67a;border:1px solid #37d67a}
-.status-badge.off{background:#ff5c7a20;color:#ff5c7a;border:1px solid #ff5c7a}
-.admin-panel{background:#1a0a2a;border:1px solid #6c3cff}
-.admin-panel h3{color:#9b6cff;margin:0 0 10px}
-@media(max-width:600px){.row{flex-direction:column}.stat{display:block;margin:4px 0}}
-</style>
-</head>
-<body>
-<div class="wrap">
-<h1>⚡ Zefoy Buff Panel Pro</h1>
-
-<!-- Telegram Card -->
-<div class="card telegram-card">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <h2>🤖 Telegram Bot</h2>
-    <span class="status-badge" id="botStatus">● Đang tải...</span>
-  </div>
-  <div class="row" style="margin-top:10px">
-    <input id="botToken" placeholder="Bot Token (lấy từ @BotFather)" />
-    <input id="channelLink" placeholder="Channel Link (vd: https://t.me/your_channel)" />
-  </div>
-  <div class="row">
-    <input id="adminIds" placeholder="Admin IDs (vd: 123456789,987654321)" />
-    <button class="btn gold" onclick="saveBotConfig()">💾 Lưu cấu hình</button>
-  </div>
-  <div class="mut" style="margin-top:8px">
-    📌 Bot sẽ check user đã join channel chưa. Mỗi ngày 15 lượt buff.
-    <br/>🔑 Lấy Bot Token từ <a href="https://t.me/BotFather" target="_blank" style="color:#6c8cff">@BotFather</a>
-    <br/>📌 Cần set API_URL trong environment: <code>https://your-app.onrender.com</code>
-  </div>
-</div>
-
-<!-- Admin Panel -->
-<div class="card admin-panel hidden" id="adminPanel">
-  <h3>🔐 Admin Panel</h3>
-  <div class="row">
-    <input id="adminBroadcast" placeholder="Tin nhắn broadcast..." />
-    <button class="btn" onclick="sendBroadcast()">📢 Gửi broadcast</button>
-  </div>
-  <div class="row">
-    <input id="adminResetUser" placeholder="User ID cần reset" />
-    <button class="btn danger" onclick="resetUser()">🔄 Reset user</button>
-  </div>
-  <div class="mut" style="margin-top:8px">📊 <span id="adminStats">Đang tải...</span></div>
-</div>
-
-<!-- Captcha -->
-<div class="card">
-  <h2>1. 🔐 Lấy captcha</h2>
-  <button class="btn" id="btnStart">▶ Bắt đầu / Lấy captcha</button>
-  <div id="capBox" class="hidden" style="margin-top:12px">
-    <div class="captcha"><img id="capImg" alt="captcha"/></div>
-    <button class="btn ghost" id="btnRefresh">🔄 Ảnh khác</button>
-    <div class="row"><input id="capAns" placeholder="Nhập chữ (chỉ chữ cái)" autocomplete="off"/><button class="btn ok" id="btnSolve">✔ Gửi</button></div>
-    <div class="mut">session: <code id="sid"></code></div>
-  </div>
-</div>
-
-<!-- Services -->
-<div class="card hidden" id="svcCard">
-  <h2>2. 📋 Chọn service & link</h2>
-  <div class="row"><select id="svc"></select><button class="btn ghost" id="btnReload">↻</button></div>
-  <input id="vurl" placeholder="https://www.tiktok.com/@user/video/..."/>
-  <div class="row"><button class="btn" id="btnRun">🚀 Buff</button><label style="display:flex;align-items:center;gap:6px;padding-left:8px"><input type="checkbox" id="loop"/>Lặp</label></div>
-</div>
-
-<!-- Stats -->
-<div class="card hidden" id="statCard">
-  <h2>3. 📊 Kết quả</h2>
-  <div>
-    <span class="stat">Tổng: <b id="tot">0</b></span>
-    <span class="stat">Lượt gần nhất: <b id="lst">–</b></span>
-    <span class="stat gold">Cooldown: <b id="cd">–</b></span>
-  </div>
-  <div id="log" style="margin-top:10px"></div>
-</div>
-</div>
-
-<script>
-// ============== MAIN ==============
-const API = location.origin;
-let SID = null;
-let cooldownInterval = null;
-
-function log(m, cls) {
-  const d = document.createElement('div');
-  if (cls) d.className = cls;
-  d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + m;
-  document.getElementById('log').prepend(d);
-  while (document.getElementById('log').children.length > 100) {
-    document.getElementById('log').removeChild(document.getElementById('log').lastChild);
-  }
-}
-
-async function call(path, body) {
-  const r = await fetch(API + path, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body || {})
-  });
-  let j;
-  try { j = await r.json(); } catch(e) {
-    throw new Error('Server trả về không phải JSON (HTTP ' + r.status + ')');
-  }
-  if (!r.ok) throw new Error(j.message || j.error || ('HTTP ' + r.status));
-  return j;
-}
-
-function showCap(b64) {
-  document.getElementById('capBox').classList.remove('hidden');
-  document.getElementById('capImg').src = 'data:image/png;base64,' + b64;
-}
-
-function renderSvc(list) {
-  const sel = document.getElementById('svc');
-  sel.innerHTML = '';
-  list.forEach(s => {
-    const o = document.createElement('option');
-    o.value = s.name;
-    o.textContent = (s.available ? '🟢 ' : '🔴 ') + s.name + ' — ' + s.status;
-    if (!s.available || !s.has_action) o.disabled = true;
-    sel.appendChild(o);
-  });
-  document.getElementById('svcCard').classList.remove('hidden');
-  document.getElementById('statCard').classList.remove('hidden');
-}
-
-function updateCooldown(seconds) {
-  const cdEl = document.getElementById('cd');
-  if (cooldownInterval) { clearInterval(cooldownInterval); cooldownInterval = null; }
-  if (!seconds || seconds <= 0) { cdEl.textContent = '–'; return; }
-  let remaining = seconds;
-  cdEl.textContent = remaining + 's';
-  cooldownInterval = setInterval(() => {
-    remaining--;
-    if (remaining <= 0) {
-      cdEl.textContent = '–';
-      clearInterval(cooldownInterval);
-      cooldownInterval = null;
-    } else {
-      cdEl.textContent = remaining + 's';
-    }
-  }, 1000);
-}
-
-// ============== BUTTONS ==============
-document.getElementById('btnStart').onclick = async () => {
-  try {
-    log('Đang lấy captcha...', 'info');
-    const j = await call('/api/start');
-    SID = j.session_id;
-    document.getElementById('sid').textContent = SID.slice(0, 8);
-    showCap(j.captcha_b64);
-    log('OK — nhập captcha', 'ok');
-  } catch(e) {
-    log('❌ ' + e.message, 'err');
-  }
-};
-
-document.getElementById('btnRefresh').onclick = async () => {
-  try {
-    const j = await call('/api/refresh_captcha', {session_id: SID});
-    showCap(j.captcha_b64);
-    log('🔄 Đã refresh captcha', 'info');
-  } catch(e) {
-    log('❌ ' + e.message, 'err');
-  }
-};
-
-document.getElementById('btnSolve').onclick = async () => {
-  const a = document.getElementById('capAns').value.trim();
-  if (!a) return;
-  try {
-    const j = await call('/api/solve', {session_id: SID, answer: a});
-    if (!j.ok) {
-      log('❌ Captcha sai, thử lại', 'err');
-      if (j.captcha_b64) showCap(j.captcha_b64);
-      return;
-    }
-    log('✅ Captcha OK', 'ok');
-    renderSvc(j.services);
-  } catch(e) {
-    log('❌ ' + e.message, 'err');
-  }
-};
-
-document.getElementById('btnReload').onclick = async () => {
-  try {
-    const j = await call('/api/services', {session_id: SID});
-    renderSvc(j.services);
-    document.getElementById('tot').textContent = j.total_sent || 0;
-    log('🔄 Đã reload services', 'info');
-  } catch(e) {
-    log('❌ ' + e.message, 'err');
-  }
-};
-
-async function runOnce() {
-  const svc = document.getElementById('svc').value;
-  const url = document.getElementById('vurl').value.trim();
-  if (!url) { log('❌ Thiếu link', 'err'); return; }
-  try {
-    const j = await call('/api/run', {session_id: SID, service: svc, url: url});
-    if (j.cooldown) {
-      updateCooldown(j.cooldown);
-      log('⏳ Cooldown ' + j.cooldown + 's', 'err');
-    }
-    if (j.amount) {
-      document.getElementById('lst').textContent = j.amount + ' ' + (j.kind || '');
-      document.getElementById('tot').textContent = j.total_sent || '0';
-      log('✅ +' + j.amount + ' ' + (j.kind || ''), 'ok');
-    } else if (j.message) {
-      log('ℹ️ ' + j.message, 'info');
-    }
-  } catch(e) {
-    log('❌ ' + e.message, 'err');
-  }
-}
-
-document.getElementById('btnRun').onclick = async () => {
-  await runOnce();
-  if (document.getElementById('loop').checked) {
-    const t = setInterval(async () => {
-      if (!document.getElementById('loop').checked) { clearInterval(t); return; }
-      await runOnce();
-    }, 15000);
-  }
-};
-
-// ============== TELEGRAM BOT ==============
-async function saveBotConfig() {
-  const token = document.getElementById('botToken').value.trim();
-  const channel = document.getElementById('channelLink').value.trim();
-  const admins = document.getElementById('adminIds').value.trim();
-  
-  if (!token) { log('❌ Vui lòng nhập Bot Token!', 'err'); return; }
-  if (!channel) { log('❌ Vui lòng nhập Channel Link!', 'err'); return; }
-  
-  try {
-    const r = await fetch('/api/telegram/config', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ bot_token: token, channel_link: channel, admin_ids: admins })
-    });
-    const j = await r.json();
-    if (j.ok) {
-      log('✅ Đã lưu cấu hình bot!', 'ok');
-      document.getElementById('botStatus').textContent = '● Online';
-      document.getElementById('botStatus').className = 'status-badge on';
-      checkAdmin();
-    } else {
-      log('❌ Lỗi lưu config: ' + (j.message || ''), 'err');
-    }
-  } catch(e) {
-    log('❌ ' + e.message, 'err');
-  }
-}
-
-async function checkAdmin() {
-  const adminIds = document.getElementById('adminIds').value;
-  if (!adminIds) return;
-  const admins = adminIds.split(',').map(id => id.trim()).filter(id => id);
-  if (admins.length > 0) {
-    document.getElementById('adminPanel').classList.remove('hidden');
-    loadAdminStats();
-  }
-}
-
-async function loadAdminStats() {
-  try {
-    const adminId = document.getElementById('adminIds').value.split(',')[0] || '0';
-    const r = await fetch('/api/telegram/stats?admin_id=' + adminId);
-    const j = await r.json();
-    if (j.total_users !== undefined) {
-      document.getElementById('adminStats').textContent = 
-        '👥 ' + j.total_users + ' users | 📈 ' + j.total_usage + ' total | 📅 ' + j.today_usage + ' today';
-    }
-  } catch(e) {
-    document.getElementById('adminStats').textContent = 'Lỗi tải stats';
-  }
-}
-
-async function sendBroadcast() {
-  const msg = document.getElementById('adminBroadcast').value.trim();
-  if (!msg) { log('❌ Nhập nội dung broadcast!', 'err'); return; }
-  try {
-    const r = await fetch('/api/telegram/broadcast', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ admin_id: document.getElementById('adminIds').value.split(',')[0] || '0', message: msg })
-    });
-    const j = await r.json();
-    if (j.ok) {
-      log('📢 Đã gửi broadcast tới ' + (j.sent || 0) + ' users', 'ok');
-      document.getElementById('adminBroadcast').value = '';
-    } else {
-      log('❌ Lỗi gửi broadcast: ' + (j.message || ''), 'err');
-    }
-  } catch(e) {
-    log('❌ ' + e.message, 'err');
-  }
-}
-
-async function resetUser() {
-  const userId = document.getElementById('adminResetUser').value.trim();
-  if (!userId) { log('❌ Nhập User ID!', 'err'); return; }
-  try {
-    const r = await fetch('/api/telegram/reset', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ admin_id: document.getElementById('adminIds').value.split(',')[0] || '0', user_id: userId })
-    });
-    const j = await r.json();
-    if (j.ok) {
-      log('✅ Đã reset user ' + userId, 'ok');
-      document.getElementById('adminResetUser').value = '';
-      loadAdminStats();
-    } else {
-      log('❌ Lỗi reset: ' + (j.message || ''), 'err');
-    }
-  } catch(e) {
-    log('❌ ' + e.message, 'err');
-  }
-}
-
-async function loadTelegramConfig() {
-  try {
-    const r = await fetch('/api/telegram/config');
-    const j = await r.json();
-    if (j.bot_token) {
-      document.getElementById('botToken').value = j.bot_token;
-      document.getElementById('channelLink').value = j.channel_link || '';
-      document.getElementById('adminIds').value = j.admin_ids || '';
-      if (j.bot_token && j.bot_token !== 'YOUR_BOT_TOKEN_HERE') {
-        document.getElementById('botStatus').textContent = '● Online';
-        document.getElementById('botStatus').className = 'status-badge on';
-        checkAdmin();
-      } else {
-        document.getElementById('botStatus').textContent = '● Offline';
-        document.getElementById('botStatus').className = 'status-badge off';
-      }
-    }
-  } catch(e) {}
-}
-
-// Load khi trang load
-document.addEventListener('DOMContentLoaded', loadTelegramConfig);
-
-// Auto refresh cooldown display
-setInterval(() => {
-  const cdEl = document.getElementById('cd');
-  if (cdEl.textContent !== '–' && cdEl.textContent !== '') {
-    const match = cdEl.textContent.match(/(\\d+)/);
-    if (match) {
-      const val = parseInt(match[1]);
-      if (val > 0) {
-        // Don't auto-decrement here, let updateCooldown handle it
-      }
-    }
-  }
-}, 1000);
-</script>
-</body>
-</html>
-"""
-
-# ============== ROUTES ==============
-
+# Lấy đường dẫn tuyệt đối
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @app.get("/")
 async def root():
-    return HTMLResponse(HTML_TEMPLATE)
+    """Phục vụ file index.html"""
+    # Thử tìm index.html trong thư mục gốc
+    index_path = os.path.join(BASE_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    
+    # Thử tìm trong thư mục static
+    static_index = os.path.join(BASE_DIR, "static", "index.html")
+    if os.path.exists(static_index):
+        return FileResponse(static_index)
+    
+    # Fallback: Trả về HTML trực tiếp
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html lang="vi">
+    <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zefoy Buff Panel</title>
+    <style>
+    :root{--bg:#0f1220;--card:#1a1e33;--fg:#e8ecff;--mut:#9aa3c7;--pri:#6c8cff;--ok:#37d67a;--err:#ff5c7a;--bd:#2a2f4f}
+    *{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+    .wrap{max-width:720px;margin:24px auto;padding:0 16px}
+    h1{font-size:20px;margin:0 0 16px}h2{font-size:15px;margin:0 0 10px;color:var(--pri)}
+    .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
+    .btn{background:var(--pri);color:#fff;border:0;padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:600}
+    .btn.ghost{background:transparent;border:1px solid var(--bd);color:var(--fg)}
+    .btn.ok{background:var(--ok)}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    input,select{background:#0f1220;color:var(--fg);border:1px solid var(--bd);padding:10px;border-radius:8px;width:100%;font-size:14px}
+    .row{display:flex;gap:8px;margin:8px 0}.row>*{flex:1}
+    .captcha{background:#fff;padding:8px;border-radius:8px;display:inline-block}
+    .captcha img{display:block;max-width:220px}
+    .mut{color:var(--mut);font-size:13px}.hidden{display:none}
+    .stat{display:inline-block;background:#0f1220;border:1px solid var(--bd);padding:8px 12px;border-radius:8px;margin:4px 6px 0 0}
+    .stat b{color:var(--pri)}
+    #log{max-height:220px;overflow:auto;font-size:12px;background:#0f1220;padding:8px;border-radius:8px;border:1px solid var(--bd);white-space:pre-wrap}
+    .err{color:var(--err)}.ok{color:var(--ok)}
+    </style>
+    </head>
+    <body>
+    <div class="wrap">
+    <h1>⚡ Zefoy Buff Panel</h1>
+
+    <div class="card">
+      <h2>1. Lấy captcha</h2>
+      <button class="btn" id="btnStart">▶ Bắt đầu / Lấy captcha</button>
+      <div id="capBox" class="hidden" style="margin-top:12px">
+        <div class="captcha"><img id="capImg" alt="captcha"/></div>
+        <button class="btn ghost" id="btnRefresh">🔄 Ảnh khác</button>
+        <div class="row"><input id="capAns" placeholder="Nhập chữ (chỉ chữ cái)" autocomplete="off"/><button class="btn ok" id="btnSolve">✔ Gửi</button></div>
+        <div class="mut">session: <code id="sid"></code></div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="svcCard">
+      <h2>2. Chọn service & link</h2>
+      <div class="row"><select id="svc"></select><button class="btn ghost" id="btnReload">↻</button></div>
+      <input id="vurl" placeholder="https://www.tiktok.com/@user/video/..."/>
+      <div class="row"><button class="btn" id="btnRun">🚀 Buff</button><label style="display:flex;align-items:center;gap:6px;padding-left:8px"><input type="checkbox" id="loop"/>Lặp</label></div>
+    </div>
+
+    <div class="card hidden" id="statCard">
+      <h2>3. Kết quả</h2>
+      <div><span class="stat">Tổng: <b id="tot">0</b></span><span class="stat">Lượt gần nhất: <b id="lst">–</b></span><span class="stat">Cooldown: <b id="cd">–</b></span></div>
+      <div id="log" style="margin-top:10px"></div>
+    </div>
+    </div>
+
+    <script>
+    const API = location.origin;
+    let SID = null;
+    let cooldownInterval = null;
+
+    function log(m,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent='['+new Date().toLocaleTimeString()+'] '+m;document.getElementById('log').prepend(d)}
+    async function call(path, body){
+      const r = await fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+      let j; try{j=await r.json()}catch(e){throw new Error('Server trả về không phải JSON (HTTP '+r.status+')')}
+      if(!r.ok) throw new Error(j.message||j.error||('HTTP '+r.status));
+      return j;
+    }
+    function showCap(b64){document.getElementById('capBox').classList.remove('hidden');document.getElementById('capImg').src='data:image/png;base64,'+b64}
+    function renderSvc(list){
+      const sel=document.getElementById('svc');sel.innerHTML='';
+      list.forEach(s=>{const o=document.createElement('option');o.value=s.name;o.textContent=(s.available?'🟢 ':'🔴 ')+s.name+' — '+s.status;if(!s.available||!s.has_action)o.disabled=true;sel.appendChild(o)});
+      document.getElementById('svcCard').classList.remove('hidden');
+      document.getElementById('statCard').classList.remove('hidden');
+    }
+    function updateCooldown(seconds) {
+      const cdEl = document.getElementById('cd');
+      if (cooldownInterval) { clearInterval(cooldownInterval); cooldownInterval = null; }
+      if (!seconds || seconds <= 0) { cdEl.textContent = '–'; return; }
+      let remaining = seconds;
+      cdEl.textContent = remaining + 's';
+      cooldownInterval = setInterval(() => {
+        remaining--;
+        if (remaining <= 0) {
+          cdEl.textContent = '–';
+          clearInterval(cooldownInterval);
+          cooldownInterval = null;
+        } else {
+          cdEl.textContent = remaining + 's';
+        }
+      }, 1000);
+    }
+    document.getElementById('btnStart').onclick=async()=>{
+      try{log('Đang lấy captcha...');const j=await call('/api/start');SID=j.session_id;document.getElementById('sid').textContent=SID.slice(0,8);showCap(j.captcha_b64);log('OK — nhập captcha','ok')}
+      catch(e){log('Lỗi: '+e.message,'err')}
+    };
+    document.getElementById('btnRefresh').onclick=async()=>{try{const j=await call('/api/refresh_captcha',{session_id:SID});showCap(j.captcha_b64)}catch(e){log('Lỗi: '+e.message,'err')}};
+    document.getElementById('btnSolve').onclick=async()=>{
+      const a=document.getElementById('capAns').value.trim();if(!a)return;
+      try{const j=await call('/api/solve',{session_id:SID,answer:a});
+        if(!j.ok){log('Captcha sai, thử lại','err');if(j.captcha_b64)showCap(j.captcha_b64);return}
+        log('Captcha OK','ok');renderSvc(j.services)}
+      catch(e){log('Lỗi: '+e.message,'err')}
+    };
+    document.getElementById('btnReload').onclick=async()=>{try{const j=await call('/api/services',{session_id:SID});renderSvc(j.services);document.getElementById('tot').textContent=j.total_sent||0}catch(e){log('Lỗi: '+e.message,'err')}};
+    async function runOnce(){
+      const svc=document.getElementById('svc').value;const url=document.getElementById('vurl').value.trim();
+      if(!url){log('Thiếu link','err');return}
+      try{const j=await call('/api/run',{session_id:SID,service:svc,url:url});
+        if(j.cooldown){updateCooldown(j.cooldown);log('⏳ Cooldown '+j.cooldown+'s','err')}
+        if(j.amount){document.getElementById('lst').textContent=j.amount+' '+(j.kind||'');document.getElementById('tot').textContent=j.total_sent||'0';log('✅ +'+j.amount+' '+(j.kind||''),'ok')}
+        else if(j.message){log('ℹ️ '+j.message,'info')}
+      }catch(e){log('❌ Lỗi: '+e.message,'err')}
+    }
+    document.getElementById('btnRun').onclick=async()=>{
+      await runOnce();
+      if(document.getElementById('loop').checked){
+        const t=setInterval(async()=>{
+          if(!document.getElementById('loop').checked){clearInterval(t);return}
+          await runOnce();
+        },15000);
+      }
+    };
+    </script>
+    </body>
+    </html>
+    """)
 
 @app.get("/api")
 def api_info():
@@ -1451,15 +767,10 @@ def api_info():
             "/api/solve",
             "/api/services",
             "/api/run",
-            "/api/refresh_captcha",
-            "/api/telegram/config",
-            "/api/telegram/stats",
-            "/api/telegram/broadcast",
-            "/api/telegram/reset"
+            "/api/refresh_captcha"
         ],
         "sessions_active": len(SESSIONS),
-        "version": "3.0.0",
-        "telegram_bot": bool(TELEGRAM_BOT_TOKEN)
+        "version": "2.0.0"
     }
 
 @app.get("/health")
@@ -1468,6 +779,7 @@ def health():
 
 @app.post("/api/start")
 def start(_: StartReq = StartReq()):
+    """Tạo session mới + lấy captcha."""
     sid = uuid.uuid4().hex
     st = _new_session_state()
     
@@ -1598,98 +910,7 @@ def run(req: RunReq):
     except Exception as e:
         raise HTTPException(500, f"Chạy buff thất bại: {str(e)}")
 
-# ============== TELEGRAM ROUTES ==============
-
-@app.post("/api/telegram/config")
-def telegram_config(req: TelegramConfigReq):
-    """Cập nhật config bot Telegram"""
-    config = {
-        "bot_token": req.bot_token,
-        "channel_link": req.channel_link,
-        "admin_ids": req.admin_ids
-    }
-    with open(TELECONFIG_FILE, "w") as f:
-        json.dump(config, f)
-    
-    os.environ["TELEGRAM_BOT_TOKEN"] = req.bot_token
-    os.environ["TELEGRAM_CHANNEL_LINK"] = req.channel_link
-    os.environ["ADMIN_IDS"] = req.admin_ids
-    
-    return {"ok": True, "message": "Đã lưu cấu hình bot"}
-
-@app.get("/api/telegram/config")
-def get_telegram_config():
-    if os.path.exists(TELECONFIG_FILE):
-        with open(TELECONFIG_FILE, "r") as f:
-            return json.load(f)
-    return {
-        "bot_token": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-        "channel_link": os.environ.get("TELEGRAM_CHANNEL_LINK", ""),
-        "admin_ids": os.environ.get("ADMIN_IDS", "")
-    }
-
-@app.get("/api/telegram/stats")
-def telegram_stats(admin_id: str):
-    admin_ids = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(",") if id.strip()]
-    if int(admin_id) not in admin_ids:
-        raise HTTPException(403, "Không phải admin")
-    
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f:
-            data = json.load(f)
-            total_users = len(data)
-            total_usage = sum(u.get("total_usage", 0) for u in data.values())
-            today = datetime.now().strftime("%Y-%m-%d")
-            today_usage = sum(1 for u in data.values() if u.get("last_date") == today)
-            return {
-                "total_users": total_users,
-                "total_usage": total_usage,
-                "today_usage": today_usage
-            }
-    return {"total_users": 0, "total_usage": 0, "today_usage": 0}
-
-@app.post("/api/telegram/broadcast")
-def telegram_broadcast(admin_id: str, message: str):
-    admin_ids = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(",") if id.strip()]
-    if int(admin_id) not in admin_ids:
-        raise HTTPException(403, "Không phải admin")
-    
-    bot = get_bot()
-    if not bot:
-        return {"ok": False, "message": "Bot chưa được khởi tạo"}
-    
-    sent = bot.broadcast(message)
-    return {"ok": True, "sent": sent}
-
-@app.post("/api/telegram/reset")
-def telegram_reset(admin_id: str, user_id: str):
-    admin_ids = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "").split(",") if id.strip()]
-    if int(admin_id) not in admin_ids:
-        raise HTTPException(403, "Không phải admin")
-    
-    user_data = db.get(user_id)
-    if user_data:
-        user_data["daily_usage"] = 0
-        user_data["last_date"] = ""
-        db.update(user_id, user_data)
-        return {"ok": True, "message": f"Đã reset user {user_id}"}
-    return {"ok": False, "message": f"Không tìm thấy user {user_id}"}
-
-# ============== START BOT THREAD ==============
-def start_bot_thread():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if token and token != "YOUR_BOT_TOKEN_HERE":
-        try:
-            bot = ZefoyTelegramBot(token)
-            bot.run()
-        except Exception as e:
-            print(f"Bot thread error: {e}")
-
-# Start bot in background if running standalone
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=start_bot_thread, daemon=True)
-    bot_thread.start()
-    
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
