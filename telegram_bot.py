@@ -12,13 +12,12 @@ import requests
 from datetime import datetime
 from typing import Optional
 
-# ============== LẤY CONFIG TỪ ENVIRONMENT ==============
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8122755073:AAHrE1SxUJbG4-K55tw8f_yHH1DBDp2N-xg")
-API_URL = os.environ.get("API_URL", "https://vuachuamduc.onrender.com")
-CHANNEL_LINK = os.environ.get("TELEGRAM_CHANNEL_LINK", "https://t.me/+uH22KBhxe51jYjM1")
-ADMIN_IDS = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "6214458926").split(",") if id.strip()]
+# ============== CONFIG ==============
+BOT_TOKEN = "8122755073:AAHrE1SxUJbG4-K55tw8f_yHH1DBDp2N-xg"
+API_URL = "https://vuachuamduc.onrender.com"  # ← ĐÚNG URL RENDER CỦA BẠN
+CHANNEL_LINK = "https://t.me/+uH22KBhxe51jYjM1"
+ADMIN_IDS = [6214458926]
 
-# Database
 DB_FILE = "telegram_users.json"
 
 # ============== DATABASE ==============
@@ -83,7 +82,6 @@ class ZefoyTelegramBot:
         self.update_id = 0
         self.pending_sessions = {}
         self.API_URL = API_URL
-        self.ADMIN_IDS = ADMIN_IDS
     
     def _extract_channel_username(self) -> str:
         match = re.search(r"t\.me/([^/\s?]+)", self.channel_link)
@@ -151,10 +149,10 @@ class ZefoyTelegramBot:
         username = msg["from"].get("username", "unknown")
         text = msg.get("text", "")
         
-        print(f"📩 Received: {text[:50]} from @{username}")
+        print(f"📩 Received: {text[:50]} from @{username} | Chat ID: {chat_id}")
         
         # Check channel membership (bỏ qua admin)
-        if int(user_id) not in self.ADMIN_IDS and not self.is_member(chat_id):
+        if int(user_id) not in ADMIN_IDS and not self.is_member(chat_id):
             self.send_message(
                 chat_id,
                 f"❌ Bạn cần tham gia kênh {self.channel_link} để dùng bot!\n"
@@ -272,7 +270,12 @@ class ZefoyTelegramBot:
         self.send_message(chat_id, f"⏳ Đang buff {service}...")
         
         try:
+            # KIỂM TRA API_URL CÓ HOẠT ĐỘNG KHÔNG
+            print(f"🔗 Calling API: {self.API_URL}/api/start")
+            
             start_resp = requests.post(f"{self.API_URL}/api/start", json={}, timeout=30)
+            print(f"📡 API Response: {start_resp.status_code}")
+            
             if start_resp.status_code != 200:
                 self.send_message(chat_id, f"❌ Lỗi kết nối server: {start_resp.status_code}")
                 return
@@ -282,7 +285,6 @@ class ZefoyTelegramBot:
             captcha_b64 = session_data.get("captcha_b64")
             
             if captcha_b64:
-                # Gửi captcha cho user
                 self.send_photo(
                     chat_id,
                     f"data:image/png;base64,{captcha_b64}",
@@ -297,16 +299,19 @@ class ZefoyTelegramBot:
             
             self.send_message(chat_id, "❌ Không lấy được captcha")
         except Exception as e:
+            print(f"❌ Buff error: {e}")
             self.send_message(chat_id, f"❌ Lỗi: {str(e)}")
     
     def run(self):
         """Main loop - get updates"""
         self.running = True
+        print("=" * 50)
         print(f"🤖 Bot started!")
         print(f"📢 Channel: {self.channel_link}")
-        print(f"👑 Admins: {self.ADMIN_IDS}")
+        print(f"👑 Admins: {ADMIN_IDS}")
         print(f"🔗 API: {self.API_URL}")
         print(f"✅ Bot is running...")
+        print("=" * 50)
         
         while self.running:
             try:
@@ -318,6 +323,7 @@ class ZefoyTelegramBot:
                         self.update_id = update["update_id"] + 1
                         self.process_update(update)
                 else:
+                    print(f"⚠️ API error: {resp}")
                     time.sleep(5)
             except Exception as e:
                 print(f"❌ Bot error: {e}")
@@ -333,8 +339,23 @@ if __name__ == "__main__":
     print("=" * 50)
     
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("❌ Vui lòng set TELEGRAM_BOT_TOKEN trong environment!")
+        print("❌ Vui lòng set BOT_TOKEN!")
         exit(1)
     
+    # Kiểm tra API_URL
+    try:
+        test = requests.get(f"{API_URL}/health", timeout=10)
+        print(f"✅ API Server: {API_URL} - Status: {test.status_code}")
+    except Exception as e:
+        print(f"❌ API Server: {API_URL} - Lỗi: {e}")
+        print("⚠️ Bot vẫn chạy nhưng KHÔNG THỂ BUFF nếu API_URL sai!")
+    
     bot = ZefoyTelegramBot(BOT_TOKEN)
-    bot.run()
+    
+    try:
+        bot.run()
+    except KeyboardInterrupt:
+        print("\n🛑 Bot stopped by user")
+        bot.stop()
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
