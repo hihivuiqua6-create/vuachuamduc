@@ -11,7 +11,7 @@ services:
       - key: TELEGRAM_BOT_TOKEN
         value: 8704711376:AAHkrYeCYUoZkmSDHC5UjLHtJAc5XGC_ae4
       - key: TELEGRAM_CHANNEL_LINK
-        value: https://t.me/+uH22KBhxe51jYjM1
+        value: https://t.me/auzachannel
       - key: ADMIN_IDS
         value: 8030294480
       - key: API_URL
@@ -27,10 +27,10 @@ services:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: TELEGRAM_BOT_TOKEN
-        value: 8122755073:AAHrE1SxUJbG4-K55tw8f_yHH1DBDp2N-xg
+        value: 8704711376:AAHkrYeCYUoZkmSDHC5UjLHtJAc5XGC_ae4
       - key: TELEGRAM_CHANNEL_LINK
-        value: https://t.me/+uH22KBhxe51jYjM1
+        value: https://t.me/auzachannel
       - key: ADMIN_IDS
-        value: 6214458926
+        value: 8030294480
       - key: API_URL
         value: https://vuachuamduc.onrender.com
