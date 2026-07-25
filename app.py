@@ -1,6 +1,6 @@
 """
 Zefoy Web API — Render-ready FastAPI wrapper
-Hỗ trợ: Hearts, Views, Followers, Shares, Comments Hearts
+Hỗ trợ: Hearts, Views, Followers, Shares, Comments Hearts (có chọn comment)
 """
 
 from __future__ import annotations
@@ -74,9 +74,10 @@ def _new_session_state() -> dict[str, Any]:
         "cooldown_until": 0,
         "last_run": 0,
         # Comments Heart
-        "selected_comment": None,
-        "comment_username": None,
-        "comment_text": None,
+        "comments_cache": [],  # Danh sách comment đã fetch
+        "selected_comment": None,  # Comment được chọn
+        "comment_action": None,  # Action của service Comments Hearts
+        "comment_input_name": None,  # Input name của service Comments Hearts
     }
 
 def _get(session_id: str) -> dict[str, Any]:
@@ -427,7 +428,7 @@ def _parse_result(html: str) -> tuple[Optional[int], Optional[str], Optional[str
     return None, None, None
 
 def _parse_comments(html: str) -> list[dict[str, Any]]:
-    """Parse comments from Zefoy Comments Hearts page"""
+    """Parse comments từ Zefoy Comments Hearts page"""
     soup = BeautifulSoup(html, 'html.parser')
     comment_items = []
     
@@ -435,6 +436,7 @@ def _parse_comments(html: str) -> list[dict[str, Any]]:
     for form in forms:
         username = None
         
+        # Tìm username (có @)
         user_div = form.find(class_='kadi-rengi')
         if user_div:
             match = re.search(r'@\w+', user_div.text)
@@ -451,6 +453,7 @@ def _parse_comments(html: str) -> list[dict[str, Any]]:
         if not username:
             continue
         
+        # Tìm nội dung comment
         comment_text = ""
         spans = form.find_all('span')
         valid_texts = []
@@ -474,6 +477,7 @@ def _parse_comments(html: str) -> list[dict[str, Any]]:
         else:
             comment_text = "Comment"
         
+        # Tìm số heart hiện tại
         heart_count = "0"
         green_span = form.find('span', class_='text-green') or form.find(class_=re.compile(r'text-green'))
         if green_span:
@@ -485,7 +489,7 @@ def _parse_comments(html: str) -> list[dict[str, Any]]:
                     heart_count = txt
                     break
         
-        # Get select options
+        # Lấy select options
         select = form.find('select')
         amounts = []
         if select:
@@ -494,7 +498,7 @@ def _parse_comments(html: str) -> list[dict[str, Any]]:
                 if val.isdigit():
                     amounts.append(int(val))
         
-        # Get hidden inputs
+        # Lấy hidden inputs
         hidden_inputs = {}
         for inp in form.find_all('input', type='hidden'):
             name = inp.get('name')
@@ -502,12 +506,16 @@ def _parse_comments(html: str) -> list[dict[str, Any]]:
             if name:
                 hidden_inputs[name] = val
         
+        # Lấy action
+        action = form.get('action', '')
+        
         comment_items.append({
             'username': username,
             'text': comment_text,
             'hearts': heart_count,
             'amounts': amounts or [25, 50, 100, 200, 500, 1000],
             'hidden_inputs': hidden_inputs,
+            'action': action,
             'form': form
         })
     
@@ -573,7 +581,6 @@ def _perform_action(st: dict[str, Any], service: str, url: str, comment_data: Op
                 st["cooldown_until"] = time.time() + timer
                 return {"success": False, "cooldown": timer, "message": f"Đang chờ {timer}s"}
             
-            # Kiểm tra nếu có form (đã load được comments)
             soup = BeautifulSoup(decoded_response, 'html.parser')
             form = soup.find('form')
             submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn'))
@@ -625,86 +632,104 @@ def _perform_action(st: dict[str, Any], service: str, url: str, comment_data: Op
         # Parse comments
         comment_items = _parse_comments(decoded_response)
         
-        if comment_items:
-            # Nếu có comment_data từ client, tìm comment đó
+        # Lưu comments vào session
+        st["comments_cache"] = comment_items
+        
+        if comment_data:
+            # Nếu có comment_data từ client, buff vào comment đó
             target_form = None
-            if comment_data and comment_data.get("username") and comment_data.get("text"):
-                for item in comment_items:
-                    if item['username'] == comment_data['username'] and item['text'] == comment_data['text']:
-                        target_form = item['form']
-                        break
+            for item in comment_items:
+                if item['username'] == comment_data.get('username') and item['text'] == comment_data.get('text'):
+                    target_form = item['form']
+                    break
             
             if not target_form:
-                # Chọn comment đầu tiên
-                target_form = comment_items[0]['form']
+                return {"success": False, "message": "Không tìm thấy comment đã chọn"}
             
-            if target_form:
-                submit_action = target_form.get('action')
-                if not submit_action or submit_action.strip() == "" or submit_action == "/":
-                    submit_action = action
-                submit_url = f"{base_url}/{submit_action}"
-                
-                submit_data = {}
-                for inp in target_form.find_all('input'):
-                    name = inp.get('name')
-                    val = inp.get('value', '')
-                    if name:
-                        submit_data[name] = val
-                
-                # Lấy select options
-                selects = target_form.find_all('select')
-                for sel in selects:
-                    name = sel.get('name')
-                    if not name:
+            submit_action = target_form.get('action')
+            if not submit_action or submit_action.strip() == "" or submit_action == "/":
+                submit_action = action
+            submit_url = f"{base_url}/{submit_action}"
+            
+            submit_data = {}
+            for inp in target_form.find_all('input'):
+                name = inp.get('name')
+                val = inp.get('value', '')
+                if name:
+                    submit_data[name] = val
+            
+            # Lấy select options và chọn max
+            selects = target_form.find_all('select')
+            for sel in selects:
+                name = sel.get('name')
+                if not name:
+                    continue
+                options = sel.find_all('option')
+                max_val = None
+                max_int = -1
+                for opt in options:
+                    val = opt.get('value', '').strip()
+                    if not val:
                         continue
-                    options = sel.find_all('option')
-                    max_val = None
-                    max_int = -1
-                    for opt in options:
-                        val = opt.get('value', '').strip()
-                        if not val:
-                            continue
-                        try:
-                            val_int = int(val)
-                            if val_int > max_int:
-                                max_int = val_int
-                                max_val = val
-                        except ValueError:
-                            if max_val is None:
-                                max_val = val
-                    if max_val is not None:
-                        submit_data[name] = max_val
-                
-                # Thêm video URL nếu cần
-                if input_name not in submit_data:
-                    submit_data[input_name] = url
-                
-                # Thêm button name
-                actual_btn = target_form.find('button', type='submit')
-                if actual_btn and actual_btn.get('name'):
-                    submit_data[actual_btn.get('name')] = actual_btn.get('value', '')
-                
-                time.sleep(3)
-                boost_r = session.post(submit_url, headers=ajax_headers, data=submit_data, timeout=45)
-                decoded_boost = _decode_response(boost_r.text)
-                
-                amount, kind, msg = _parse_result(decoded_boost)
-                
-                if not msg:
-                    soup_clean = BeautifulSoup(decoded_boost, 'html.parser')
-                    msg = soup_clean.get_text(separator=' ').strip()[:200]
-                
-                timer = _extract_timer(decoded_boost)
-                if timer and timer > 0:
-                    st["cooldown_until"] = time.time() + timer
-                
-                return {
-                    "success": True,
-                    "amount": amount or 100,
-                    "kind": kind or "hearts",
-                    "message": msg or "Thành công",
-                    "cooldown": timer
-                }
+                    try:
+                        val_int = int(val)
+                        if val_int > max_int:
+                            max_int = val_int
+                            max_val = val
+                    except ValueError:
+                        if max_val is None:
+                            max_val = val
+                if max_val is not None:
+                    submit_data[name] = max_val
+            
+            # Thêm video URL nếu cần
+            if input_name not in submit_data:
+                submit_data[input_name] = url
+            
+            actual_btn = target_form.find('button', type='submit')
+            if actual_btn and actual_btn.get('name'):
+                submit_data[actual_btn.get('name')] = actual_btn.get('value', '')
+            
+            time.sleep(3)
+            boost_r = session.post(submit_url, headers=ajax_headers, data=submit_data, timeout=45)
+            decoded_boost = _decode_response(boost_r.text)
+            
+            amount, kind, msg = _parse_result(decoded_boost)
+            
+            if not msg:
+                soup_clean = BeautifulSoup(decoded_boost, 'html.parser')
+                msg = soup_clean.get_text(separator=' ').strip()[:200]
+            
+            timer = _extract_timer(decoded_boost)
+            if timer and timer > 0:
+                st["cooldown_until"] = time.time() + timer
+            
+            # Xóa cache comments sau khi buff
+            st["comments_cache"] = []
+            
+            return {
+                "success": True,
+                "amount": amount or 100,
+                "kind": kind or "hearts",
+                "message": msg or "Thành công",
+                "cooldown": timer,
+                "comments": comment_items  # Trả về danh sách comment để client hiển thị
+            }
+        else:
+            # Chỉ fetch comments, chưa buff
+            return {
+                "success": True,
+                "comments": [
+                    {
+                        "username": c["username"],
+                        "text": c["text"],
+                        "hearts": c["hearts"],
+                        "amounts": c["amounts"]
+                    }
+                    for c in comment_items
+                ],
+                "count": len(comment_items)
+            }
     
     # ===== XỬ LÝ SERVICE THÔNG THƯỜNG =====
     form = soup.find('form')
@@ -831,16 +856,17 @@ HTML_TEMPLATE = """
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Zefoy Buff Panel</title>
+<title>Zefoy Buff Panel Pro</title>
 <style>
 :root{--bg:#0f1220;--card:#1a1e33;--fg:#e8ecff;--mut:#9aa3c7;--pri:#6c8cff;--ok:#37d67a;--err:#ff5c7a;--bd:#2a2f4f}
 *{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
-.wrap{max-width:720px;margin:24px auto;padding:0 16px}
-h1{font-size:20px;margin:0 0 16px}h2{font-size:15px;margin:0 0 10px;color:var(--pri)}
+.wrap{max-width:820px;margin:24px auto;padding:0 16px}
+h1{font-size:22px;margin:0 0 16px}h2{font-size:15px;margin:0 0 10px;color:var(--pri)}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
 .btn{background:var(--pri);color:#fff;border:0;padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:600}
 .btn.ghost{background:transparent;border:1px solid var(--bd);color:var(--fg)}
 .btn.ok{background:var(--ok)}
+.btn.comment{background:#ff6b6b;color:#fff}
 .btn:disabled{opacity:.5;cursor:not-allowed}
 input,select{background:#0f1220;color:var(--fg);border:1px solid var(--bd);padding:10px;border-radius:8px;width:100%;font-size:14px}
 .row{display:flex;gap:8px;margin:8px 0}.row>*{flex:1}
@@ -851,14 +877,21 @@ input,select{background:#0f1220;color:var(--fg);border:1px solid var(--bd);paddi
 .stat b{color:var(--pri)}
 #log{max-height:220px;overflow:auto;font-size:12px;background:#0f1220;padding:8px;border-radius:8px;border:1px solid var(--bd);white-space:pre-wrap}
 .err{color:var(--err)}.ok{color:var(--ok)}
+.comment-item{padding:8px 12px;border:1px solid var(--bd);border-radius:8px;margin:4px 0;cursor:pointer;transition:all .3s}
+.comment-item:hover{background:var(--bd);border-color:var(--pri)}
+.comment-item.selected{background:#1a2a4a;border-color:var(--pri)}
+.comment-item .username{color:var(--ok);font-weight:bold}
+.comment-item .text{color:var(--fg)}
+.comment-item .hearts{color:var(--gold);float:right}
 </style>
 </head>
 <body>
 <div class="wrap">
-<h1>⚡ Zefoy Buff Panel</h1>
+<h1>⚡ Zefoy Buff Panel Pro</h1>
 
+<!-- Captcha -->
 <div class="card">
-  <h2>1. Lấy captcha</h2>
+  <h2>1. 🔐 Lấy captcha</h2>
   <button class="btn" id="btnStart">▶ Bắt đầu / Lấy captcha</button>
   <div id="capBox" class="hidden" style="margin-top:12px">
     <div class="captcha"><img id="capImg" alt="captcha"/></div>
@@ -868,16 +901,36 @@ input,select{background:#0f1220;color:var(--fg);border:1px solid var(--bd);paddi
   </div>
 </div>
 
+<!-- Services -->
 <div class="card hidden" id="svcCard">
-  <h2>2. Chọn service & link</h2>
+  <h2>2. 📋 Chọn service & link</h2>
   <div class="row"><select id="svc"></select><button class="btn ghost" id="btnReload">↻</button></div>
   <input id="vurl" placeholder="https://www.tiktok.com/@user/video/..."/>
-  <div class="row"><button class="btn" id="btnRun">🚀 Buff</button><label style="display:flex;align-items:center;gap:6px;padding-left:8px"><input type="checkbox" id="loop"/>Lặp</label></div>
+  <div class="row">
+    <button class="btn" id="btnRun">🚀 Buff</button>
+    <button class="btn comment hidden" id="btnFetchComments">💬 Lấy comment</button>
+    <label style="display:flex;align-items:center;gap:6px;padding-left:8px"><input type="checkbox" id="loop"/>Lặp</label>
+  </div>
 </div>
 
+<!-- Comments List -->
+<div class="card hidden" id="commentsCard">
+  <h2>💬 Danh sách bình luận</h2>
+  <div id="commentList"></div>
+  <div class="row">
+    <button class="btn comment" id="btnBuffComment">❤️ Buff comment đã chọn</button>
+  </div>
+  <div class="mut" style="margin-top:8px">Chọn 1 comment để buff heart, sau đó bấm "Buff comment đã chọn"</div>
+</div>
+
+<!-- Stats -->
 <div class="card hidden" id="statCard">
-  <h2>3. Kết quả</h2>
-  <div><span class="stat">Tổng: <b id="tot">0</b></span><span class="stat">Lượt gần nhất: <b id="lst">–</b></span><span class="stat">Cooldown: <b id="cd">–</b></span></div>
+  <h2>3. 📊 Kết quả</h2>
+  <div>
+    <span class="stat">Tổng: <b id="tot">0</b></span>
+    <span class="stat">Lượt gần nhất: <b id="lst">–</b></span>
+    <span class="stat">Cooldown: <b id="cd">–</b></span>
+  </div>
   <div id="log" style="margin-top:10px"></div>
 </div>
 </div>
@@ -886,6 +939,8 @@ input,select{background:#0f1220;color:var(--fg);border:1px solid var(--bd);paddi
 const API = location.origin;
 let SID = null;
 let cooldownInterval = null;
+let selectedComment = null;
+let commentsData = [];
 
 function log(m,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent='['+new Date().toLocaleTimeString()+'] '+m;document.getElementById('log').prepend(d)}
 async function call(path, body){
@@ -897,9 +952,19 @@ async function call(path, body){
 function showCap(b64){document.getElementById('capBox').classList.remove('hidden');document.getElementById('capImg').src='data:image/png;base64,'+b64}
 function renderSvc(list){
   const sel=document.getElementById('svc');sel.innerHTML='';
-  list.forEach(s=>{const o=document.createElement('option');o.value=s.name;o.textContent=(s.available?'🟢 ':'🔴 ')+s.name+' — '+s.status;if(!s.available||!s.has_action)o.disabled=true;sel.appendChild(o)});
+  let hasComments = false;
+  list.forEach(s=>{
+    const o=document.createElement('option');o.value=s.name;o.textContent=(s.available?'🟢 ':'🔴 ')+s.name+' — '+s.status;if(!s.available||!s.has_action)o.disabled=true;sel.appendChild(o);
+    if(s.name === 'Comments Hearts' && s.available) hasComments = true;
+  });
   document.getElementById('svcCard').classList.remove('hidden');
   document.getElementById('statCard').classList.remove('hidden');
+  // Hiện nút Fetch Comments nếu service Comments Hearts có sẵn
+  if(hasComments) {
+    document.getElementById('btnFetchComments').classList.remove('hidden');
+  } else {
+    document.getElementById('btnFetchComments').classList.add('hidden');
+  }
 }
 function updateCooldown(seconds) {
   const cdEl = document.getElementById('cd');
@@ -918,27 +983,119 @@ function updateCooldown(seconds) {
     }
   }, 1000);
 }
+function renderComments(comments) {
+  const container = document.getElementById('commentList');
+  container.innerHTML = '';
+  commentsData = comments;
+  selectedComment = null;
+  comments.forEach((c, idx) => {
+    const div = document.createElement('div');
+    div.className = 'comment-item';
+    div.dataset.index = idx;
+    div.innerHTML = `
+      <span class="username">${c.username}</span>
+      <span class="text">"${c.text}"</span>
+      <span class="hearts">❤️ ${c.hearts}</span>
+    `;
+    div.onclick = () => selectComment(idx);
+    container.appendChild(div);
+  });
+  document.getElementById('commentsCard').classList.remove('hidden');
+  log(`📋 Đã tải ${comments.length} bình luận`, 'info');
+}
+function selectComment(idx) {
+  const items = document.querySelectorAll('.comment-item');
+  items.forEach((el, i) => {
+    if (i === idx) {
+      el.classList.add('selected');
+      selectedComment = commentsData[idx];
+    } else {
+      el.classList.remove('selected');
+    }
+  });
+  log(`✅ Đã chọn: ${selectedComment.username} - "${selectedComment.text}"`, 'ok');
+}
+
+// ============== BUTTONS ==============
 document.getElementById('btnStart').onclick=async()=>{
   try{log('Đang lấy captcha...');const j=await call('/api/start');SID=j.session_id;document.getElementById('sid').textContent=SID.slice(0,8);showCap(j.captcha_b64);log('OK — nhập captcha','ok')}
-  catch(e){log('Lỗi: '+e.message,'err')}
+  catch(e){log('❌ '+e.message,'err')}
 };
-document.getElementById('btnRefresh').onclick=async()=>{try{const j=await call('/api/refresh_captcha',{session_id:SID});showCap(j.captcha_b64)}catch(e){log('Lỗi: '+e.message,'err')}};
+document.getElementById('btnRefresh').onclick=async()=>{try{const j=await call('/api/refresh_captcha',{session_id:SID});showCap(j.captcha_b64)}catch(e){log('❌ '+e.message,'err')}};
 document.getElementById('btnSolve').onclick=async()=>{
   const a=document.getElementById('capAns').value.trim();if(!a)return;
   try{const j=await call('/api/solve',{session_id:SID,answer:a});
-    if(!j.ok){log('Captcha sai, thử lại','err');if(j.captcha_b64)showCap(j.captcha_b64);return}
-    log('Captcha OK','ok');renderSvc(j.services)}
-  catch(e){log('Lỗi: '+e.message,'err')}
+    if(!j.ok){log('❌ Captcha sai, thử lại','err');if(j.captcha_b64)showCap(j.captcha_b64);return}
+    log('✅ Captcha OK','ok');renderSvc(j.services)}
+  catch(e){log('❌ '+e.message,'err')}
 };
-document.getElementById('btnReload').onclick=async()=>{try{const j=await call('/api/services',{session_id:SID});renderSvc(j.services);document.getElementById('tot').textContent=j.total_sent||0}catch(e){log('Lỗi: '+e.message,'err')}};
+document.getElementById('btnReload').onclick=async()=>{try{const j=await call('/api/services',{session_id:SID});renderSvc(j.services);document.getElementById('tot').textContent=j.total_sent||0}catch(e){log('❌ '+e.message,'err')}};
+
+// ===== FETCH COMMENTS =====
+document.getElementById('btnFetchComments').onclick=async()=>{
+  const svc = document.getElementById('svc').value;
+  const url = document.getElementById('vurl').value.trim();
+  if(!url){log('❌ Nhập link video!','err');return}
+  if(svc !== 'Comments Hearts'){log('❌ Chọn service Comments Hearts!','err');return}
+  try{
+    log('⏳ Đang lấy danh sách bình luận...','info');
+    const j = await call('/api/comments/fetch', {session_id:SID, service:svc, url:url});
+    if(j.cooldown){
+      updateCooldown(j.cooldown);
+      log('⏳ Cooldown '+j.cooldown+'s','err');
+      return;
+    }
+    if(j.ok && j.comments && j.comments.length > 0){
+      renderComments(j.comments);
+      log(`✅ Đã tải ${j.comments.length} bình luận`, 'ok');
+    } else {
+      log('❌ Không tìm thấy bình luận nào', 'err');
+    }
+  } catch(e){log('❌ '+e.message,'err')}
+};
+
+// ===== BUFF COMMENT =====
+document.getElementById('btnBuffComment').onclick=async()=>{
+  if(!selectedComment){log('❌ Chọn 1 bình luận trước!','err');return}
+  const svc = document.getElementById('svc').value;
+  const url = document.getElementById('vurl').value.trim();
+  if(!url){log('❌ Nhập link video!','err');return}
+  try{
+    log(`⏳ Đang buff heart cho ${selectedComment.username}...`,'info');
+    const j = await call('/api/comments/run', {
+      session_id: SID,
+      service: svc,
+      url: url,
+      username: selectedComment.username,
+      text: selectedComment.text,
+      amount: 25
+    });
+    if(j.cooldown){
+      updateCooldown(j.cooldown);
+      log('⏳ Cooldown '+j.cooldown+'s','err');
+      return;
+    }
+    if(j.ok){
+      document.getElementById('lst').textContent = '+' + j.amount + ' hearts';
+      document.getElementById('tot').textContent = j.total_sent || '0';
+      log(`✅ +${j.amount} hearts cho ${selectedComment.username}`, 'ok');
+      // Refresh comments sau khi buff
+      setTimeout(() => { document.getElementById('btnFetchComments').click(); }, 3000);
+    } else {
+      log('❌ '+j.message, 'err');
+    }
+  } catch(e){log('❌ '+e.message,'err')}
+};
+
+// ===== RUN NORMAL =====
 async function runOnce(){
   const svc=document.getElementById('svc').value;const url=document.getElementById('vurl').value.trim();
-  if(!url){log('Thiếu link','err');return}
+  if(!url){log('❌ Thiếu link','err');return}
   try{const j=await call('/api/run',{session_id:SID,service:svc,url:url});
     if(j.cooldown){updateCooldown(j.cooldown);log('⏳ Cooldown '+j.cooldown+'s','err')}
     if(j.amount){document.getElementById('lst').textContent=j.amount+' '+(j.kind||'');document.getElementById('tot').textContent=j.total_sent||'0';log('✅ +'+j.amount+' '+(j.kind||''),'ok')}
     else if(j.message){log('ℹ️ '+j.message,'info')}
-  }catch(e){log('❌ Lỗi: '+e.message,'err')}
+  }catch(e){log('❌ '+e.message,'err')}
 }
 document.getElementById('btnRun').onclick=async()=>{
   await runOnce();
@@ -967,7 +1124,9 @@ def api_info():
             "/api/solve",
             "/api/services",
             "/api/run",
-            "/api/refresh_captcha"
+            "/api/refresh_captcha",
+            "/api/comments/fetch",
+            "/api/comments/run"
         ],
         "sessions_active": len(SESSIONS),
         "version": "2.0.0"
@@ -1108,6 +1267,88 @@ def run(req: RunReq):
             }
     except Exception as e:
         raise HTTPException(500, f"Chạy buff thất bại: {str(e)}")
+
+# ============== COMMENTS HEART ROUTES ==============
+
+@app.post("/api/comments/fetch")
+def comments_fetch(req: CommentsFetchReq):
+    """Lấy danh sách comment từ video"""
+    st = _get(req.session_id)
+    
+    try:
+        now = time.time()
+        if st.get("cooldown_until", 0) > now:
+            remaining = int(st["cooldown_until"] - now)
+            return {
+                "ok": False,
+                "cooldown": remaining,
+                "message": f"Đang cooldown {remaining}s",
+            }
+        
+        result = _perform_action(st, req.service, req.url)
+        
+        if result.get("success"):
+            return {
+                "ok": True,
+                "comments": result.get("comments", []),
+                "count": result.get("count", 0)
+            }
+        else:
+            return {
+                "ok": False,
+                "message": result.get("message", "Lỗi khi lấy comment"),
+                "cooldown": result.get("cooldown")
+            }
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi fetch comments: {str(e)}")
+
+@app.post("/api/comments/run")
+def comments_run(req: CommentsRunReq):
+    """Buff heart vào comment đã chọn"""
+    st = _get(req.session_id)
+    
+    try:
+        now = time.time()
+        if st.get("cooldown_until", 0) > now:
+            remaining = int(st["cooldown_until"] - now)
+            return {
+                "ok": False,
+                "cooldown": remaining,
+                "message": f"Đang cooldown {remaining}s",
+                "total_sent": st.get("total_sent", 0),
+            }
+        
+        comment_data = {
+            "username": req.username,
+            "text": req.text,
+            "amount": req.amount
+        }
+        
+        result = _perform_action(st, req.service, req.url, comment_data)
+        
+        if result.get("success"):
+            amount = result.get("amount", 0)
+            st["total_sent"] = st.get("total_sent", 0) + amount
+            
+            return {
+                "ok": True,
+                "amount": amount,
+                "kind": result.get("kind", "hearts"),
+                "message": result.get("message", "Thành công"),
+                "cooldown": result.get("cooldown"),
+                "total_sent": st.get("total_sent", 0),
+                "service": req.service,
+                "username": req.username
+            }
+        else:
+            return {
+                "ok": False,
+                "message": result.get("message", "Lỗi không xác định"),
+                "cooldown": result.get("cooldown"),
+                "total_sent": st.get("total_sent", 0),
+            }
+    except Exception as e:
+        raise HTTPException(500, f"Lỗi buff comments: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
