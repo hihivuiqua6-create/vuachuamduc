@@ -7,19 +7,13 @@ import os
 import sys
 import time
 
-# Import bot từ telegram_bot.py
 try:
     from telegram_bot import ZefoyTelegramBot
-except ImportError:
-    print("❌ Không tìm thấy telegram_bot.py")
+except ImportError as e:
+    print(f"❌ Không tìm thấy telegram_bot.py: {e}")
     sys.exit(1)
 
-# Lấy token từ environment
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8122755073:AAHrE1SxUJbG4-K55tw8f_yHH1DBDp2N-xg")
-
-if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-    print("❌ Chưa set TELEGRAM_BOT_TOKEN trong environment!")
-    sys.exit(1)
 
 print("=" * 50)
 print("🤖 Starting Telegram Bot Worker...")
