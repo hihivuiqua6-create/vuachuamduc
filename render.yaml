@@ -4,33 +4,7 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -k uvicorn.workers.UvicornWorker app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    startCommand: gunicorn -k uvicorn.workers.UvicornWorker app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 60
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: TELEGRAM_BOT_TOKEN
-        value: 8704711376:AAHkrYeCYUoZkmSDHC5UjLHtJAc5XGC_ae4
-      - key: TELEGRAM_CHANNEL_LINK
-        value: https://t.me/auzachannel
-      - key: ADMIN_IDS
-        value: 8030294480
-      - key: API_URL
-        value: https://vuachuamduc.onrender.com
-
-  - type: worker
-    name: zefoy-bot
-    env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: python worker.py
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
-      - key: TELEGRAM_BOT_TOKEN
-        value: 8704711376:AAHkrYeCYUoZkmSDHC5UjLHtJAc5XGC_ae4
-      - key: TELEGRAM_CHANNEL_LINK
-        value: https://t.me/auzachannel
-      - key: ADMIN_IDS
-        value: 8030294480
-      - key: API_URL
-        value: https://vuachuamduc.onrender.com
