@@ -4,7 +4,15 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -k uvicorn.workers.UvicornWorker app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 60
+    startCommand: gunicorn -k uvicorn.workers.UvicornWorker app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: TELEGRAM_BOT_TOKEN
+        value: YOUR_BOT_TOKEN_HERE
+      - key: TELEGRAM_CHANNEL_LINK
+        value: https://t.me/your_channel
+      - key: ADMIN_IDS
+        value: 123456789,987654321
+      - key: API_URL
+        value: https://your-app.onrender.com
