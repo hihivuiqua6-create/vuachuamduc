@@ -57,6 +57,8 @@ input,select{background:#0f1220;color:var(--fg);border:1px solid var(--bd);paddi
 <script>
 const API = location.origin;
 let SID = null;
+let cooldownInterval = null;
+
 function log(m,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent='['+new Date().toLocaleTimeString()+'] '+m;document.getElementById('log').prepend(d)}
 async function call(path, body){
   const r = await fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
@@ -70,6 +72,23 @@ function renderSvc(list){
   list.forEach(s=>{const o=document.createElement('option');o.value=s.name;o.textContent=(s.available?'🟢 ':'🔴 ')+s.name+' — '+s.status;if(!s.available||!s.has_action)o.disabled=true;sel.appendChild(o)});
   document.getElementById('svcCard').classList.remove('hidden');
   document.getElementById('statCard').classList.remove('hidden');
+}
+function updateCooldown(seconds) {
+  const cdEl = document.getElementById('cd');
+  if (cooldownInterval) { clearInterval(cooldownInterval); cooldownInterval = null; }
+  if (!seconds || seconds <= 0) { cdEl.textContent = '–'; return; }
+  let remaining = seconds;
+  cdEl.textContent = remaining + 's';
+  cooldownInterval = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      cdEl.textContent = '–';
+      clearInterval(cooldownInterval);
+      cooldownInterval = null;
+    } else {
+      cdEl.textContent = remaining + 's';
+    }
+  }, 1000);
 }
 document.getElementById('btnStart').onclick=async()=>{
   try{log('Đang lấy captcha...');const j=await call('/api/start');SID=j.session_id;document.getElementById('sid').textContent=SID.slice(0,8);showCap(j.captcha_b64);log('OK — nhập captcha','ok')}
@@ -88,11 +107,19 @@ async function runOnce(){
   const svc=document.getElementById('svc').value;const url=document.getElementById('vurl').value.trim();
   if(!url){log('Thiếu link','err');return}
   try{const j=await call('/api/run',{session_id:SID,service:svc,url:url});
-    if(j.cooldown){document.getElementById('cd').textContent=j.cooldown+'s';log('Cooldown '+j.cooldown+'s')}
-    if(j.amount){document.getElementById('lst').textContent=j.amount+' '+(j.kind||'');document.getElementById('tot').textContent=j.total||'?';log('+'+j.amount+' '+(j.kind||''),'ok')}
-    else if(j.message)log(j.message)
-  }catch(e){log('Lỗi: '+e.message,'err')}
+    if(j.cooldown){updateCooldown(j.cooldown);log('⏳ Cooldown '+j.cooldown+'s','err')}
+    if(j.amount){document.getElementById('lst').textContent=j.amount+' '+(j.kind||'');document.getElementById('tot').textContent=j.total_sent||'0';log('✅ +'+j.amount+' '+(j.kind||''),'ok')}
+    else if(j.message){log('ℹ️ '+j.message,'info')}
+  }catch(e){log('❌ Lỗi: '+e.message,'err')}
 }
-document.getElementById('btnRun').onclick=async()=>{await runOnce();if(document.getElementById('loop').checked){const t=setInterval(async()=>{if(!document.getElementById('loop').checked){clearInterval(t);return}await runOnce()},20000)}};
+document.getElementById('btnRun').onclick=async()=>{
+  await runOnce();
+  if(document.getElementById('loop').checked){
+    const t=setInterval(async()=>{
+      if(!document.getElementById('loop').checked){clearInterval(t);return}
+      await runOnce();
+    },15000);
+  }
+};
 </script>
 </body></html>
