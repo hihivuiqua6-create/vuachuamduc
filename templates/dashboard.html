@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Dashboard — Zefoy Buff</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+  <div class="absolute inset-0 -z-10 bg-gradient-to-br from-indigo-950 via-slate-950 to-fuchsia-950"></div>
+
+  <header class="sticky top-0 z-20 backdrop-blur-xl bg-slate-950/60 border-b border-white/10">
+    <div class="mx-auto max-w-6xl px-4 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="h-9 w-9 rounded-xl bg-gradient-to-tr from-indigo-500 to-fuchsia-500"></div>
+        <div>
+          <div class="font-semibold leading-tight">Zefoy Buff Panel</div>
+          <div class="text-xs text-slate-400">Dev Auza</div>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-slate-400 hidden sm:inline">Key: <span class="font-mono">{{ user.id }}…</span></span>
+        <button id="logoutBtn" class="text-sm rounded-lg px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10">Đăng xuất</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-6xl px-4 py-8 grid gap-6 lg:grid-cols-3">
+    <!-- Captcha card -->
+    <section class="lg:col-span-1 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-6">
+      <div class="flex items-center justify-between">
+        <h2 class="font-semibold">1. Captcha</h2>
+        <button id="initBtn" class="text-xs rounded-md px-2 py-1 bg-indigo-500/20 border border-indigo-400/30 hover:bg-indigo-500/30">Init phiên</button>
+      </div>
+      <div class="mt-4 aspect-[3/1] rounded-lg bg-slate-900/60 border border-white/10 flex items-center justify-center overflow-hidden">
+        <img id="captchaImg" class="max-h-full hidden" />
+        <span id="captchaPh" class="text-xs text-slate-500">Bấm "Lấy captcha"</span>
+      </div>
+      <div class="mt-3 flex gap-2">
+        <button id="getCap" class="flex-1 rounded-lg py-2 text-sm bg-white/5 hover:bg-white/10 border border-white/10">Lấy captcha</button>
+      </div>
+      <div class="mt-3 flex gap-2">
+        <input id="capAnswer" placeholder="Đáp án captcha" class="flex-1 rounded-lg bg-slate-900/60 border border-white/10 px-3 py-2 text-sm outline-none focus:border-fuchsia-500">
+        <button id="solveBtn" class="rounded-lg px-4 py-2 text-sm bg-gradient-to-r from-indigo-500 to-fuchsia-500 font-medium">Giải</button>
+      </div>
+    </section>
+
+    <!-- Buff card -->
+    <section class="lg:col-span-2 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-6">
+      <h2 class="font-semibold">2. Thực hiện Buff</h2>
+      <div class="mt-4 grid gap-4 sm:grid-cols-2">
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">Dịch vụ</label>
+          <div class="flex gap-2">
+            <select id="service" class="flex-1 rounded-lg bg-slate-900/60 border border-white/10 px-3 py-2 text-sm">
+              <option value="">-- Chưa tải --</option>
+            </select>
+            <button id="refreshSvc" class="rounded-lg px-3 py-2 text-sm bg-white/5 hover:bg-white/10 border border-white/10">↻</button>
+          </div>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">URL TikTok</label>
+          <input id="ttUrl" placeholder="https://www.tiktok.com/@user/video/..." class="w-full rounded-lg bg-slate-900/60 border border-white/10 px-3 py-2 text-sm">
+        </div>
+      </div>
+      <button id="buffBtn" class="mt-5 w-full rounded-lg py-3 font-semibold bg-gradient-to-r from-emerald-500 to-cyan-500 shadow-lg shadow-emerald-500/20 hover:brightness-110">
+        Chạy Buff
+      </button>
+
+      <div class="mt-6">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="text-sm font-medium text-slate-300">Nhật ký</h3>
+          <button id="clearLog" class="text-xs text-slate-400 hover:text-slate-200">Xoá</button>
+        </div>
+        <pre id="log" class="h-64 overflow-auto rounded-lg bg-slate-900/70 border border-white/10 p-3 text-xs font-mono whitespace-pre-wrap"></pre>
+      </div>
+    </section>
+  </main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+function log(msg, cls='') {
+  const t = new Date().toLocaleTimeString();
+  logEl.innerHTML += `<div class="${cls}">[${t}] ${msg}</div>`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+async function api(path, opts={}) {
+  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  return r.json();
+}
+
+$('logoutBtn').onclick = async () => { await api('/api/logout',{method:'POST'}); location='/login'; };
+$('clearLog').onclick = () => logEl.innerHTML = '';
+
+$('initBtn').onclick = async () => {
+  log('Đang khởi tạo phiên Zefoy...');
+  const j = await api('/api/init',{method:'POST'});
+  log(j.ok ? '✅ Init OK' : '❌ Init lỗi: '+(j.error||''), j.ok?'text-emerald-400':'text-rose-400');
+};
+
+$('getCap').onclick = async () => {
+  log('Đang lấy captcha...');
+  const j = await api('/api/captcha');
+  if (j.ok) {
+    $('captchaImg').src = j.image;
+    $('captchaImg').classList.remove('hidden');
+    $('captchaPh').classList.add('hidden');
+    log('Captcha đã tải', 'text-emerald-400');
+  } else log('Lỗi captcha: '+(j.error||''),'text-rose-400');
+};
+
+$('solveBtn').onclick = async () => {
+  const ans = $('capAnswer').value.trim();
+  if (!ans) return;
+  log('Đang giải captcha: '+ans);
+  const j = await api('/api/solve',{method:'POST', body:JSON.stringify({answer:ans})});
+  log(j.ok?'✅ Captcha đúng':'❌ Captcha sai', j.ok?'text-emerald-400':'text-rose-400');
+  if (j.ok) loadServices();
+};
+
+async function loadServices() {
+  const j = await api('/api/services');
+  if (!j.ok) { log('Lỗi services: '+(j.error||''),'text-rose-400'); return; }
+  const sel = $('service');
+  sel.innerHTML = '<option value="">-- Chọn dịch vụ --</option>';
+  (j.services||[]).forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.key || s.name || s;
+    opt.textContent = (s.name||s.key||s) + (s.status?` [${s.status}]`:'');
+    sel.appendChild(opt);
+  });
+  log(`Đã tải ${j.services.length} dịch vụ`,'text-emerald-400');
+}
+$('refreshSvc').onclick = loadServices;
+
+$('buffBtn').onclick = async () => {
+  const service = $('service').value;
+  const url = $('ttUrl').value.trim();
+  if (!service || !url) { log('Chọn dịch vụ và nhập URL','text-amber-400'); return; }
+  log(`Buff ${service} → ${url}`);
+  const j = await api('/api/buff',{method:'POST', body:JSON.stringify({service,url})});
+  if (j.ok) log('✅ '+JSON.stringify(j.result),'text-emerald-400');
+  else log('❌ '+(j.error||''),'text-rose-400');
+};
+</script>
+</body>
+</html>

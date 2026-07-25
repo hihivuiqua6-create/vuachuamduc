@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Đăng nhập — Zefoy Buff</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center px-4">
+  <div class="absolute inset-0 -z-10 bg-gradient-to-br from-indigo-950 via-slate-950 to-fuchsia-950"></div>
+  <div class="absolute inset-0 -z-10 opacity-30 bg-[radial-gradient(circle_at_20%_20%,#6366f1_0,transparent_40%),radial-gradient(circle_at_80%_80%,#d946ef_0,transparent_40%)]"></div>
+
+  <div class="w-full max-w-md">
+    <div class="mb-8 text-center">
+      <div class="inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-tr from-indigo-500 to-fuchsia-500 shadow-lg shadow-fuchsia-500/30">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="white" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+      </div>
+      <h1 class="mt-4 text-3xl font-bold tracking-tight">Zefoy Buff Panel</h1>
+      <p class="mt-1 text-sm text-slate-400">TikTok automation — Developed by Dev Auza</p>
+    </div>
+
+    <div class="rounded-2xl border border-white/10 bg-white/5 backdrop-blur-xl p-8 shadow-2xl">
+      <h2 class="text-xl font-semibold">Đăng nhập bằng KEY</h2>
+      <p class="mt-1 text-sm text-slate-400">Nhập key được cấp để truy cập dashboard.</p>
+
+      <form id="loginForm" class="mt-6 space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-300 mb-1">Access Key</label>
+          <input id="key" type="text" autocomplete="off" required
+            class="w-full rounded-lg bg-slate-900/60 border border-white/10 px-4 py-3 text-sm outline-none focus:border-fuchsia-500 focus:ring-2 focus:ring-fuchsia-500/30 transition"
+            placeholder="XXXX-XXXX-XXXX" />
+        </div>
+        <button type="submit"
+          class="w-full rounded-lg bg-gradient-to-r from-indigo-500 to-fuchsia-500 py-3 font-semibold shadow-lg shadow-fuchsia-500/30 hover:brightness-110 active:scale-[0.99] transition">
+          Đăng nhập
+        </button>
+        <p id="err" class="hidden text-sm text-rose-400"></p>
+      </form>
+    </div>
+
+    <p class="mt-6 text-center text-xs text-slate-500">© 2025 Dev Auza. All rights reserved.</p>
+  </div>
+
+<script>
+const form = document.getElementById('loginForm');
+const err = document.getElementById('err');
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  err.classList.add('hidden');
+  const key = document.getElementById('key').value.trim();
+  const btn = form.querySelector('button');
+  btn.disabled = true; btn.textContent = 'Đang kiểm tra...';
+  try {
+    const r = await fetch('/api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({key})});
+    const j = await r.json();
+    if (j.ok) { window.location = '/dashboard'; return; }
+    err.textContent = j.error || 'Login thất bại';
+    err.classList.remove('hidden');
+  } catch (e) {
+    err.textContent = 'Lỗi mạng: ' + e.message;
+    err.classList.remove('hidden');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Đăng nhập';
+  }
+});
+</script>
+</body>
+</html>
