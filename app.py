@@ -1,6 +1,5 @@
 """
 Zefoy Web API — Render-ready FastAPI wrapper (UPDATED with new logic)
-Giữ nguyên API cũ nhưng cập nhật logic buff từ TOOL SOUCRE.py
 """
 
 from __future__ import annotations
@@ -19,8 +18,9 @@ from string import ascii_letters, digits
 from typing import Any, Optional
 from urllib.parse import unquote
 from datetime import datetime
+import threading
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from bs4 import BeautifulSoup
@@ -76,6 +76,8 @@ def _new_session_state() -> dict[str, Any]:
         "captcha_b64": None,
         "captcha_encoded": None,
         "initialized": False,
+        "cooldown_until": 0,  # timestamp when cooldown ends
+        "last_run": 0,
     }
 
 def _get(session_id: str) -> dict[str, Any]:
@@ -92,7 +94,7 @@ def _gc():
     for k in dead:
         SESSIONS.pop(k, None)
 
-# ============== CORE LOGIC (from TOOL SOUCRE.py) ==============
+# ============== CORE LOGIC ==============
 
 def _init_session(st: dict[str, Any]) -> None:
     """Initialize Zefoy session with cookies"""
@@ -172,7 +174,6 @@ def _get_captcha_image(st: dict[str, Any]) -> bytes:
     if not resp.content:
         raise Exception("Empty image response")
     
-    # Store encoded for later use
     st["captcha_encoded"] = encoded
     
     return resp.content
@@ -398,6 +399,7 @@ def _extract_timer(html: str) -> Optional[int]:
         r'Please wait\s+(\d+)\s+seconds',
         r'(\d+)\s*minute\(s\)\s*(\d+)\s*second',
         r'wait\s+(\d+)\s*seconds',
+        r'var\s+remainingTimelogin\s*=\s*(\d+)',
     ]
     for pat in patterns:
         m = re.search(pat, html, re.I)
@@ -439,10 +441,16 @@ def _parse_result(html: str) -> tuple[Optional[int], Optional[str], Optional[str
     return None, None, None
 
 def _perform_action(st: dict[str, Any], service: str, url: str) -> dict[str, Any]:
-    """Perform buff action (new logic from TOOL SOUCRE.py)"""
+    """Perform buff action with cooldown tracking"""
     session = st["session"]
     base_url = st["base_url"]
     service_map = st.get("service_map", {})
+    
+    # Check global cooldown
+    now = time.time()
+    if st.get("cooldown_until", 0) > now:
+        remaining = int(st["cooldown_until"] - now)
+        return {"success": False, "cooldown": remaining, "message": f"Đang chờ {remaining}s"}
     
     svc_info = service_map.get(service)
     if not svc_info:
@@ -463,7 +471,6 @@ def _perform_action(st: dict[str, Any], service: str, url: str) -> dict[str, Any
     action_url = f"{base_url}/{action}" if not action.startswith('http') else action
     search_data = {input_name: url}
     
-    # Get ajax headers
     ajax_headers = {
         'accept': '*/*',
         'accept-language': 'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5',
@@ -482,22 +489,28 @@ def _perform_action(st: dict[str, Any], service: str, url: str) -> dict[str, Any
     
     decoded_response = None
     for attempt in range(3):
-        r = session.post(action_url, headers=ajax_headers, data=search_data, timeout=45)
-        decoded_response = _decode_response(r.text)
-        
-        timer = _extract_timer(decoded_response)
-        if timer and timer > 0:
-            return {"success": False, "cooldown": timer, "message": f"Đang chờ {timer}s"}
-        
-        soup = BeautifulSoup(decoded_response, 'html.parser')
-        form = soup.find('form')
-        submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn|submit'))
-        
-        if form or submit_btn:
-            break
-        
-        if attempt < 2:
-            time.sleep(2.5)
+        try:
+            r = session.post(action_url, headers=ajax_headers, data=search_data, timeout=45)
+            decoded_response = _decode_response(r.text)
+            
+            timer = _extract_timer(decoded_response)
+            if timer and timer > 0:
+                st["cooldown_until"] = time.time() + timer
+                return {"success": False, "cooldown": timer, "message": f"Đang chờ {timer}s"}
+            
+            soup = BeautifulSoup(decoded_response, 'html.parser')
+            form = soup.find('form')
+            submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn|submit'))
+            
+            if form or submit_btn:
+                break
+            
+            if attempt < 2:
+                time.sleep(2.5)
+        except Exception as e:
+            if attempt == 2:
+                return {"success": False, "message": f"Lỗi kết nối: {str(e)}"}
+            time.sleep(2)
     
     if not decoded_response:
         return {"success": False, "message": "Không nhận được phản hồi"}
@@ -552,33 +565,41 @@ def _perform_action(st: dict[str, Any], service: str, url: str) -> dict[str, Any
                 submit_data[actual_btn.get('name')] = actual_btn.get('value', '')
             
             submit_url = f"{base_url}/{submit_action}" if not submit_action.startswith('http') else submit_action
-            boost_r = session.post(submit_url, headers=ajax_headers, data=submit_data, timeout=45)
-            
-            decoded_boost = _decode_response(boost_r.text)
-            
-            amount, kind, msg = _parse_result(decoded_boost)
-            
-            if not msg:
-                soup_clean = BeautifulSoup(decoded_boost, 'html.parser')
-                msg = soup_clean.get_text(separator=' ').strip()[:200]
-            
-            timer = _extract_timer(decoded_boost)
-            
-            return {
-                "success": True,
-                "amount": amount or 100,
-                "kind": kind or "unit",
-                "message": msg or "Thành công",
-                "cooldown": timer
-            }
+            try:
+                boost_r = session.post(submit_url, headers=ajax_headers, data=submit_data, timeout=45)
+                decoded_boost = _decode_response(boost_r.text)
+                
+                amount, kind, msg = _parse_result(decoded_boost)
+                
+                if not msg:
+                    soup_clean = BeautifulSoup(decoded_boost, 'html.parser')
+                    msg = soup_clean.get_text(separator=' ').strip()[:200]
+                
+                timer = _extract_timer(decoded_boost)
+                if timer and timer > 0:
+                    st["cooldown_until"] = time.time() + timer
+                
+                return {
+                    "success": True,
+                    "amount": amount or 100,
+                    "kind": kind or "unit",
+                    "message": msg or "Thành công",
+                    "cooldown": timer
+                }
+            except Exception as e:
+                return {"success": False, "message": f"Lỗi submit: {str(e)}"}
     
     amount, kind, msg = _parse_result(decoded_response)
+    timer = _extract_timer(decoded_response)
+    if timer and timer > 0:
+        st["cooldown_until"] = time.time() + timer
+    
     return {
         "success": True,
         "amount": amount or 100,
         "kind": kind or "unit",
         "message": msg or "Thành công",
-        "cooldown": _extract_timer(decoded_response)
+        "cooldown": timer
     }
 
 # ============== Pydantic models ==============
@@ -599,14 +620,10 @@ class RunReq(BaseModel):
 
 # ============== Routes ==============
 from fastapi.responses import FileResponse
-_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 @app.get("/")
 def root():
-    idx = os.path.join(_STATIC_DIR, "index.html")
-    if os.path.exists(idx):
-        return FileResponse(idx)
-    return {"name": "Zefoy Web API", "version": "2.0.0"}
+    return FileResponse("index.html")
 
 @app.get("/api")
 def api_info():
@@ -722,11 +739,24 @@ def run(req: RunReq):
     st = _get(req.session_id)
     
     try:
+        # Check cooldown first
+        now = time.time()
+        if st.get("cooldown_until", 0) > now:
+            remaining = int(st["cooldown_until"] - now)
+            return {
+                "ok": False,
+                "cooldown": remaining,
+                "message": f"Đang cooldown {remaining}s",
+                "total_sent": st.get("total_sent", 0),
+                "service": req.service,
+            }
+        
         result = _perform_action(st, req.service, req.url)
         
         if result.get("success"):
             amount = result.get("amount", 0)
             st["total_sent"] = st.get("total_sent", 0) + amount
+            st["last_run"] = time.time()
             
             return {
                 "ok": True,
