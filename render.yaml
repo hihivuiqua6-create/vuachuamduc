@@ -1,5 +1,4 @@
 services:
-  # Web Service - API
   - type: web
     name: zefoy-api
     env: python
@@ -18,7 +17,6 @@ services:
       - key: API_URL
         value: https://vuachuamduc.onrender.com
 
-  # Worker Service - Telegram Bot
   - type: worker
     name: zefoy-bot
     env: python
