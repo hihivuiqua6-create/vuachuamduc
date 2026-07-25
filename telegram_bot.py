@@ -1,20 +1,19 @@
 """
-Telegram Bot for Zefoy Buff - Render Worker
+Telegram Bot for Zefoy Buff - Render Worker (FIXED)
 """
 
 import os
 import re
 import time
 import json
-import threading
 import requests
 from datetime import datetime
 
-# ============== CONFIG ==============
-BOT_TOKEN = "8122755073:AAHrE1SxUJbG4-K55tw8f_yHH1DBDp2N-xg"
+# ============== CONFIG MỚI ==============
+BOT_TOKEN = "8704711376:AAHkrYeCYUoZkmSDHC5UjLHtJAc5XGC_ae4"
 API_URL = "https://vuachuamduc.onrender.com"
-CHANNEL_LINK = "https://t.me/+uH22KBhxe51jYjM1"
-ADMIN_IDS = [6214458926]
+CHANNEL_LINK = "https://t.me/auzachannel"
+ADMIN_IDS = [8030294480]
 
 DB_FILE = "telegram_users.json"
 
@@ -22,7 +21,6 @@ DB_FILE = "telegram_users.json"
 class UserDB:
     def __init__(self):
         self.data = self._load()
-        self._lock = threading.Lock()
     
     def _load(self) -> dict:
         if os.path.exists(DB_FILE):
@@ -34,9 +32,8 @@ class UserDB:
         return {}
     
     def _save(self):
-        with self._lock:
-            with open(DB_FILE, 'w') as f:
-                json.dump(self.data, f, indent=2)
+        with open(DB_FILE, 'w') as f:
+            json.dump(self.data, f, indent=2)
     
     def get(self, user_id: str) -> dict:
         return self.data.get(user_id, {})
@@ -70,22 +67,11 @@ db = UserDB()
 
 # ============== TELEGRAM BOT ==============
 class ZefoyTelegramBot:
-    def __init__(self, token: str):
-        self.token = token
-        self.base_url = f"https://api.telegram.org/bot{token}"
-        self.channel_link = CHANNEL_LINK
-        self.channel_username = self._extract_channel_username()
-        self.running = False
-        self.update_id = 0
-        self.pending_sessions = {}
-        self.API_URL = API_URL
-        self.ADMIN_IDS = ADMIN_IDS
-    
-    def _extract_channel_username(self) -> str:
-        match = re.search(r"t\.me/([^/\s?]+)", self.channel_link)
-        if match:
-            return match.group(1)
-        return self.channel_link.replace("https://t.me/", "").strip()
+    def __init__(self):
+        self.base_url = f"https://api.telegram.org/bot{BOT_TOKEN}"
+        self.channel_username = CHANNEL_LINK.replace("https://t.me/", "").strip()
+        self.offset = 0
+        self.pending = {}
     
     def _request(self, method: str, data: dict = None) -> dict:
         try:
@@ -96,28 +82,42 @@ class ZefoyTelegramBot:
             print(f"❌ API Error: {e}")
             return {"ok": False}
     
-    def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML") -> bool:
+    def send_message(self, chat_id: int, text: str) -> bool:
         try:
-            data = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
-            result = self._request("sendMessage", data)
+            result = self._request("sendMessage", {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML"
+            })
             return result.get("ok", False)
         except Exception as e:
-            print(f"❌ Send message error: {e}")
+            print(f"❌ Send error: {e}")
             return False
+    
+    def send_photo(self, chat_id: int, photo_base64: str, caption: str = ""):
+        try:
+            self._request("sendPhoto", {
+                "chat_id": chat_id,
+                "photo": f"data:image/png;base64,{photo_base64}",
+                "caption": caption
+            })
+        except Exception as e:
+            print(f"❌ Photo error: {e}")
     
     def is_member(self, user_id: int) -> bool:
         try:
-            data = {"chat_id": f"@{self.channel_username}", "user_id": user_id}
-            result = self._request("getChatMember", data)
+            result = self._request("getChatMember", {
+                "chat_id": f"@{self.channel_username}",
+                "user_id": user_id
+            })
             if result.get("ok"):
                 status = result.get("result", {}).get("status", "")
                 return status in ["member", "administrator", "creator"]
             return False
-        except Exception as e:
-            print(f"❌ Check member error: {e}")
+        except:
             return False
     
-    def process_update(self, update: dict):
+    def process(self, update: dict):
         if "message" not in update:
             return
         
@@ -129,75 +129,77 @@ class ZefoyTelegramBot:
         
         print(f"📩 {text[:50]} from @{username} (ID: {user_id})")
         
-        # Check channel membership (bỏ qua admin)
-        if int(user_id) not in self.ADMIN_IDS and not self.is_member(chat_id):
-            self.send_message(
-                chat_id,
-                f"❌ Bạn cần tham gia kênh {self.channel_link} để dùng bot!\n"
-                f"📌 Sau khi tham gia, gửi /start lại."
-            )
+        # Admin không cần check channel
+        if int(user_id) not in ADMIN_IDS and not self.is_member(chat_id):
+            self.send_message(chat_id, f"❌ Cần tham gia kênh {CHANNEL_LINK} để dùng bot!")
             return
         
         if text.startswith("/"):
-            self._handle_command(chat_id, user_id, username, text)
+            self._cmd(chat_id, user_id, username, text)
         else:
-            self._handle_buff(chat_id, user_id, username, text)
+            self._buff(chat_id, user_id, username, text)
     
-    def _handle_command(self, chat_id: int, user_id: str, username: str, text: str):
+    def _cmd(self, chat_id: int, user_id: str, username: str, text: str):
         cmd = text.split()[0].lower()
         
         if cmd == "/start":
             daily = db.get_daily_usage(user_id)
             total = db.get(user_id).get("total_usage", 0)
-            msg = (
-                f"🤖 <b>Zefoy Buff Bot</b>\n\n"
-                f"👤 User: @{username}\n"
-                f"📊 Hôm nay: {daily}/15 lượt\n"
-                f"📈 Tổng: {total} lượt\n\n"
-                f"<b>Cách dùng:</b>\n"
-                f"Gửi link TikTok + dịch vụ\n"
-                f"Ví dụ: <code>https://tiktok.com/... hearts</code>\n\n"
-                f"<b>Dịch vụ:</b> hearts, views, followers, shares\n"
-                f"📌 Cần tham gia {self.channel_link} để dùng bot!"
-            )
+            msg = f"""
+🤖 <b>Zefoy Buff Bot</b>
+
+👤 @{username}
+📊 Hôm nay: {daily}/15
+📈 Tổng: {total}
+
+<b>Cách dùng:</b>
+Gửi link TikTok + dịch vụ
+Ví dụ: <code>https://tiktok.com/... hearts</code>
+
+<b>Dịch vụ:</b> hearts, views, followers, shares
+📌 Cần tham gia {CHANNEL_LINK} để dùng bot!
+"""
             self.send_message(chat_id, msg)
-            
+        
         elif cmd == "/help":
-            msg = (
-                f"📖 <b>Hướng dẫn</b>\n\n"
-                f"/start - Xem thông tin\n"
-                f"/help - Hướng dẫn này\n"
-                f"/stats - Thống kê (admin)\n"
-                f"/broadcast - Gửi tin (admin)\n"
-                f"/reset - Reset user (admin)\n\n"
-                f"<b>Buff:</b>\n"
-                f"<code>https://tiktok.com/... hearts</code>"
-            )
+            msg = """
+📖 <b>Hướng dẫn</b>
+
+/start - Xem thông tin
+/help - Hướng dẫn này
+/stats - Thống kê (admin)
+/broadcast - Gửi tin (admin)
+/reset - Reset user (admin)
+
+<b>Buff:</b>
+<code>https://tiktok.com/... hearts</code>
+"""
             self.send_message(chat_id, msg)
-            
+        
         elif cmd == "/stats" and db.is_admin(user_id):
             total_users = len(db.data)
             total_usage = sum(u.get("total_usage", 0) for u in db.data.values())
-            msg = (
-                f"📊 <b>Bot Stats</b>\n\n"
-                f"👥 Users: {total_users}\n"
-                f"📈 Total buffs: {total_usage}\n"
-                f"🟢 Status: Online"
-            )
+            msg = f"""
+📊 <b>Bot Stats</b>
+
+👥 Users: {total_users}
+📈 Total buffs: {total_usage}
+🟢 Status: Online
+"""
             self.send_message(chat_id, msg)
-            
+        
         elif cmd == "/broadcast" and db.is_admin(user_id):
             if len(text.split()) > 1:
-                broadcast_text = text.split(" ", 1)[1]
+                msg = text.split(" ", 1)[1]
                 sent = 0
                 for uid in db.data.keys():
                     try:
-                        if self.send_message(int(uid), f"📢 {broadcast_text}"):
+                        if self.send_message(int(uid), f"📢 {msg}"):
                             sent += 1
                         time.sleep(0.1)
                     except:
                         pass
-                self.send_message(chat_id, f"✅ Đã gửi broadcast tới {sent} users")
+                self.send_message(chat_id, f"✅ Đã gửi tới {sent} users")
             else:
                 self.send_message(chat_id, "⚠️ /broadcast <nội dung>")
         
@@ -205,20 +207,82 @@ class ZefoyTelegramBot:
             parts = text.split()
             if len(parts) == 2:
                 target = parts[1]
-                user_data = db.get(target)
-                if user_data:
-                    user_data["daily_usage"] = 0
-                    user_data["last_date"] = ""
-                    db.update(target, user_data)
+                u = db.get(target)
+                if u:
+                    u["daily_usage"] = 0
+                    u["last_date"] = ""
+                    db.update(target, u)
                     self.send_message(chat_id, f"✅ Đã reset user {target}")
                 else:
                     self.send_message(chat_id, f"❌ Không tìm thấy user {target}")
             else:
                 self.send_message(chat_id, "⚠️ /reset <user_id>")
+        
+        elif cmd == "/captcha":
+            self._captcha(chat_id, user_id, text)
         else:
-            self.send_message(chat_id, f"❌ Lệnh không hợp lệ. Gửi /help")
+            self.send_message(chat_id, "❌ Lệnh không hợp lệ. /help")
     
-    def _handle_buff(self, chat_id: int, user_id: str, username: str, text: str):
+    def _captcha(self, chat_id: int, user_id: str, text: str):
+        parts = text.split()
+        if len(parts) < 2:
+            self.send_message(chat_id, "⚠️ /captcha <mã>")
+            return
+        
+        answer = parts[1]
+        pending = self.pending.get(user_id)
+        if not pending:
+            self.send_message(chat_id, "❌ Không có session đang chờ")
+            return
+        
+        try:
+            solve = requests.post(
+                f"{API_URL}/api/solve",
+                json={"session_id": pending["session_id"], "answer": answer},
+                timeout=30
+            )
+            if solve.status_code != 200:
+                self.send_message(chat_id, "❌ Lỗi gửi captcha")
+                return
+            
+            data = solve.json()
+            if not data.get("ok"):
+                self.send_message(chat_id, "❌ Captcha sai, thử lại!")
+                return
+            
+            run = requests.post(
+                f"{API_URL}/api/run",
+                json={
+                    "session_id": pending["session_id"],
+                    "service": pending["service"].capitalize(),
+                    "url": pending["url"]
+                },
+                timeout=60
+            )
+            if run.status_code == 200:
+                result = run.json()
+                if result.get("ok"):
+                    amount = result.get("amount", 0)
+                    db.increment_daily(user_id)
+                    total = db.get(user_id).get("total_usage", 0)
+                    msg = f"""
+✅ <b>Buff thành công!</b>
+
+📊 +{amount} {pending['service']}
+📅 Hôm nay: {db.get_daily_usage(user_id)}/15
+📈 Tổng: {total}
+🔗 {pending['url']}
+"""
+                    self.send_message(chat_id, msg)
+                    del self.pending[user_id]
+                else:
+                    self.send_message(chat_id, f"❌ {result.get('message', 'Lỗi')}")
+            else:
+                self.send_message(chat_id, "❌ Lỗi khi buff")
+        except Exception as e:
+            self.send_message(chat_id, f"❌ Lỗi: {str(e)}")
+    
+    def _buff(self, chat_id: int, user_id: str, username: str, text: str):
         daily = db.get_daily_usage(user_id)
         if daily >= 15:
             self.send_message(chat_id, f"❌ Hết 15 lượt hôm nay! {daily}/15")
@@ -226,52 +290,38 @@ class ZefoyTelegramBot:
         
         services = ["hearts", "views", "followers", "shares", "comments"]
         service = None
-        for svc in services:
-            if svc in text.lower():
-                service = svc
+        for s in services:
+            if s in text.lower():
+                service = s
                 break
         
         if not service:
-            self.send_message(
-                chat_id,
-                f"❌ Dịch vụ: {', '.join(services)}\nVí dụ: https://tiktok.com/... hearts"
-            )
+            self.send_message(chat_id, f"❌ Dịch vụ: {', '.join(services)}\nVí dụ: https://tiktok.com/... hearts")
             return
         
         url_match = re.search(r"https?://[^\s]+", text)
         if not url_match:
-            self.send_message(chat_id, "❌ Không thấy link TikTok")
+            self.send_message(chat_id, "❌ Không tìm thấy link TikTok")
             return
         
         url = url_match.group(0)
         self.send_message(chat_id, f"⏳ Đang buff {service}...")
         
         try:
-            # Gọi API
-            start_resp = requests.post(f"{self.API_URL}/api/start", json={}, timeout=30)
-            if start_resp.status_code != 200:
-                self.send_message(chat_id, f"❌ Lỗi server: {start_resp.status_code}")
+            start = requests.post(f"{API_URL}/api/start", json={}, timeout=30)
+            if start.status_code != 200:
+                self.send_message(chat_id, f"❌ Lỗi server: {start.status_code}")
                 return
             
-            session_data = start_resp.json()
-            session_id = session_data.get("session_id")
-            captcha_b64 = session_data.get("captcha_b64")
+            data = start.json()
+            session_id = data.get("session_id")
+            captcha_b64 = data.get("captcha_b64")
             
             if captcha_b64:
-                self.send_message(
-                    chat_id,
-                    f"🔐 Nhập captcha: /captcha <mã>\n"
-                    f"📸 Ảnh captcha đã gửi kèm theo"
-                )
+                self.send_photo(chat_id, captcha_b64, f"🔐 Nhập captcha cho {service}")
+                self.send_message(chat_id, "📝 Gửi /captcha <mã> để tiếp tục")
                 
-                # Gửi ảnh captcha
-                try:
-                    import base64 as b64
-                    self._send_photo(chat_id, captcha_b64, f"Nhập captcha cho {service}")
-                except:
-                    pass
-                
-                self.pending_sessions[user_id] = {
+                self.pending[user_id] = {
                     "session_id": session_id,
                     "service": service,
                     "url": url
@@ -282,47 +332,37 @@ class ZefoyTelegramBot:
         except Exception as e:
             self.send_message(chat_id, f"❌ Lỗi: {str(e)}")
     
-    def _send_photo(self, chat_id: int, b64_data: str, caption: str = ""):
-        try:
-            data = {
-                "chat_id": chat_id,
-                "photo": f"data:image/png;base64,{b64_data}",
-                "caption": caption
-            }
-            self._request("sendPhoto", data)
-        except Exception as e:
-            print(f"❌ Send photo error: {e}")
-    
     def run(self):
-        self.running = True
         print("=" * 50)
         print("🤖 Zefoy Telegram Bot")
         print("=" * 50)
-        print(f"📢 Channel: {self.channel_link}")
-        print(f"👑 Admins: {self.ADMIN_IDS}")
-        print(f"🔗 API: {self.API_URL}")
+        print(f"📢 Channel: {CHANNEL_LINK}")
+        print(f"👑 Admins: {ADMIN_IDS}")
+        print(f"🔗 API: {API_URL}")
         print("✅ Bot is running...")
         print("=" * 50)
+        print("⏳ Waiting for messages...")
         
-        while self.running:
+        while True:
             try:
-                data = {"offset": self.update_id, "timeout": 30}
-                resp = self._request("getUpdates", data)
+                resp = self._request("getUpdates", {
+                    "offset": self.offset,
+                    "timeout": 30,
+                    "allowed_updates": ["message"]
+                })
                 
                 if resp.get("ok"):
                     for update in resp.get("result", []):
-                        self.update_id = update["update_id"] + 1
-                        self.process_update(update)
+                        self.offset = update["update_id"] + 1
+                        self.process(update)
                 else:
+                    print(f"⚠️ API error: {resp}")
                     time.sleep(5)
             except Exception as e:
-                print(f"❌ Bot error: {e}")
+                print(f"❌ Error: {e}")
                 time.sleep(5)
 
 # ============== MAIN ==============
 if __name__ == "__main__":
-    bot = ZefoyTelegramBot(BOT_TOKEN)
-    try:
-        bot.run()
-    except KeyboardInterrupt:
-        print("\n🛑 Bot stopped")
+    bot = ZefoyTelegramBot()
+    bot.run()
