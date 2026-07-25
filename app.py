@@ -1,39 +1,478 @@
+# app.py - Version mới dùng logic từ TOOL SOUCRE.py
 """
-Zefoy Web API — Render-ready FastAPI wrapper.
-
-Không cần admin token. Client (PHP) chỉ cần:
-  POST /api/start                → { session_id, captcha_b64 }
-  POST /api/solve                → { session_id, answer } → { ok, services }
-  POST /api/services             → { session_id } → { services }
-  POST /api/run                  → { session_id, service, url } → { ok, amount, kind, message, timer, total }
-  POST /api/refresh_captcha      → { session_id } → { captcha_b64 }  (khi user muốn ảnh mới)
-
-Session state được giữ trong RAM theo session_id (UUID). Đủ dùng cho 1 instance Render free.
+Zefoy Web API - Dùng logic mới từ TOOL SOUCRE.py
+Deploy lên Render.com
 """
+
 from __future__ import annotations
 
-import base64
-import io
 import os
 import re
-import random
 import time
-import uuid
 import json
-from string import ascii_letters, digits
-from typing import Any, Optional
+import base64
+import hashlib
+import uuid
+from typing import Optional, Dict, Any, List
+from datetime import datetime
 from urllib.parse import unquote
+from io import BytesIO
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+import requests
+from bs4 import BeautifulSoup
 
-from zefoy.captcha import DEFAULT_USER_AGENT, ZefoyCaptcha
-from zefoy.fingerprint import apply_session_guard_cookies, build_captcha_encoded
-from zefoy.submit import ZefoyClient, is_captcha_page
-from zefoy.services import parse_services
+# ============== CONFIG ==============
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+DEFAULT_BASE_URL = "https://zefoy.com"
 
-app = FastAPI(title="Zefoy Web API", version="1.0.0")
+# ============== ZEFOY CLIENT (từ TOOL SOUCRE.py) ==============
+class ZefoyClient:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.verify = False
+        self.user_agent = DEFAULT_USER_AGENT
+        self.base_url = DEFAULT_BASE_URL
+        self._services = []
+        self._service_map = {}
+        self._video_key = None
+        self._update_headers()
+    
+    def _update_headers(self):
+        self.session.headers.update({
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'accept-language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
+            'sec-ch-ua': '"Not;A=Brand";v="8", "Chromium";v="150", "Google Chrome";v="150"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'none',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1',
+            'user-agent': self.user_agent,
+        })
+    
+    def initialize(self) -> bool:
+        """Khởi tạo session với zefoy.com"""
+        try:
+            resp = self.session.get(f"{self.base_url}/", timeout=30)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"Init error: {e}")
+            return False
+    
+    def get_captcha_image(self) -> Optional[bytes]:
+        """Lấy ảnh captcha từ zefoy.com"""
+        try:
+            # Lấy PHPSESSID trước
+            if not self.session.cookies.get("PHPSESSID"):
+                self.initialize()
+            
+            ts = int(time.time())
+            url = f"{self.base_url}/?getcapthca={ts}"
+            headers = {
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"{self.base_url}/",
+            }
+            resp = self.session.get(url, headers=headers, timeout=30)
+            resp.raise_for_status()
+            
+            data = resp.json()
+            if not data:
+                return None
+            
+            # Lấy encoded path
+            encoded = None
+            key = hashlib.md5(self.user_agent.encode()).hexdigest()
+            if key in data:
+                encoded = data[key]
+            elif len(data) == 1:
+                encoded = next(iter(data.values()))
+            else:
+                return None
+            
+            # Decode path
+            once = base64.b64decode(encoded)
+            twice = base64.b64decode(once)
+            image_path = twice.decode('utf-8').strip()
+            
+            if not image_path.startswith("/"):
+                image_path = "/" + image_path
+            
+            # Download image
+            img_url = f"{self.base_url}{image_path}"
+            resp = self.session.get(img_url, timeout=30)
+            resp.raise_for_status()
+            
+            return resp.content
+            
+        except Exception as e:
+            print(f"Captcha error: {e}")
+            return None
+    
+    def solve_captcha(self, answer: str) -> bool:
+        """Gửi captcha answer lên zefoy"""
+        try:
+            answer = re.sub(r"[^a-zA-Z]", "", answer or "").lower()
+            if not answer:
+                return False
+            
+            # Build captcha_encoded (fingerprint)
+            fingerprint = {
+                "deviceInfo": {
+                    "cpuCores": 8,
+                    "deviceMemoryGB": 8,
+                    "platform": "Win32",
+                    "maxTouchPoints": 0,
+                },
+                "browserInfo": {
+                    "userAgent": self.user_agent,
+                    "timezone": "Asia/Saigon",
+                    "language": "vi",
+                    "languages": ["vi"],
+                    "cookieEnabled": True,
+                    "webdriver": False,
+                },
+                "screenInfo": {
+                    "width": 1920,
+                    "height": 1080,
+                    "colorDepth": 24,
+                },
+                "storageInfo": {
+                    "localStorage": "Yes",
+                    "sessionStorage": "Yes",
+                    "indexedDB": "Yes",
+                }
+            }
+            plaintext = json.dumps(fingerprint, separators=(',', ':'))
+            encoded = base64.b64encode(plaintext.encode()).decode()
+            
+            data = {
+                "captchalogin": answer,
+                "captcha_encoded": encoded,
+            }
+            
+            resp = self.session.post(
+                f"{self.base_url}/",
+                data=data,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Origin": self.base_url,
+                    "Referer": f"{self.base_url}/",
+                },
+                timeout=30
+            )
+            
+            if resp.text.strip().lower() == "success":
+                self._refresh_services()
+                return True
+            return False
+            
+        except Exception as e:
+            print(f"Solve error: {e}")
+            return False
+    
+    def _refresh_services(self):
+        """Lấy danh sách dịch vụ từ zefoy"""
+        try:
+            resp = self.session.get(f"{self.base_url}/", timeout=30)
+            html = resp.text or ""
+            
+            soup = BeautifulSoup(html, 'html.parser')
+            self._services = []
+            self._service_map = {}
+            
+            for card in soup.find_all('div', class_='colsmenu'):
+                title_tag = card.find('h5', class_='card-title')
+                if not title_tag:
+                    continue
+                title = title_tag.text.strip()
+                
+                btn = card.find('button')
+                is_active = btn and 'disabled' not in btn.attrs
+                
+                status_tag = card.find(class_='badge') or card.find('small')
+                status = status_tag.text.strip() if status_tag else ("ON" if is_active else "OFF")
+                
+                form = card.find('form')
+                action = None
+                input_name = None
+                
+                if form:
+                    action = form.get('action')
+                    search_input = form.find('input', type='search')
+                    if not search_input:
+                        search_input = form.find('input', class_='form-control')
+                    if search_input:
+                        input_name = search_input.get('name')
+                    
+                    if not input_name:
+                        for inp in form.find_all('input'):
+                            if inp.get('name'):
+                                input_name = inp.get('name')
+                                break
+                
+                service_info = {
+                    'title': title,
+                    'available': is_active,
+                    'status': status,
+                    'action': action,
+                    'input_name': input_name,
+                }
+                
+                self._services.append(service_info)
+                
+                if is_active and action and input_name:
+                    self._service_map[title] = service_info
+                    if input_name:
+                        self._video_key = input_name
+                        
+        except Exception as e:
+            print(f"Refresh services error: {e}")
+    
+    def get_services(self) -> List[dict]:
+        if not self._services:
+            self._refresh_services()
+        return self._services
+    
+    def perform_action(self, service: str, url: str) -> Dict[str, Any]:
+        """Thực hiện buff cho 1 dịch vụ"""
+        try:
+            svc_info = self._service_map.get(service)
+            if not svc_info:
+                return {"success": False, "message": f"Service '{service}' không tồn tại"}
+            
+            if not svc_info.get("available"):
+                return {"success": False, "message": f"Service '{service}' hiện không khả dụng"}
+            
+            action = svc_info.get('action')
+            input_name = svc_info.get('input_name')
+            
+            if not action or not input_name:
+                return {"success": False, "message": "Thiếu thông tin action/input. Đã refresh dịch vụ, thử lại!"}
+            
+            action_url = f"{self.base_url}/{action}" if not action.startswith('http') else action
+            search_data = {input_name: url}
+            
+            # Headers cho AJAX
+            ajax_headers = {
+                'accept': '*/*',
+                'accept-language': 'vi-VN,vi;q=0.9',
+                'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'origin': self.base_url,
+                'user-agent': self.user_agent,
+                'x-requested-with': 'XMLHttpRequest',
+                'referer': f'{self.base_url}/'
+            }
+            
+            decoded_response = None
+            for attempt in range(3):
+                r = self.session.post(action_url, headers=ajax_headers, data=search_data, timeout=45)
+                decoded_response = self._decode_response(r.text)
+                
+                timer = self._extract_timer(decoded_response)
+                if timer and timer > 0:
+                    return {"success": False, "cooldown": timer, "message": f"Đang chờ {timer}s"}
+                
+                soup = BeautifulSoup(decoded_response, 'html.parser')
+                form = soup.find('form')
+                submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn|submit'))
+                
+                if form or submit_btn:
+                    break
+                
+                if attempt < 2:
+                    time.sleep(2.5)
+            
+            if not decoded_response:
+                return {"success": False, "message": "Không nhận được phản hồi"}
+            
+            # Xử lý form confirm nếu có
+            soup = BeautifulSoup(decoded_response, 'html.parser')
+            form = soup.find('form')
+            submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn|submit'))
+            
+            if form or submit_btn:
+                target_form = form if form else (submit_btn.find_parent('form') if submit_btn else None)
+                
+                if target_form:
+                    submit_action = target_form.get('action')
+                    if not submit_action or submit_action.strip() == "" or submit_action == "/":
+                        submit_action = action
+                    
+                    submit_data = {}
+                    for inp in target_form.find_all('input'):
+                        name = inp.get('name')
+                        val = inp.get('value', '')
+                        if name:
+                            submit_data[name] = val
+                    
+                    selects = target_form.find_all('select')
+                    for sel in selects:
+                        name = sel.get('name')
+                        if not name:
+                            continue
+                        options = sel.find_all('option')
+                        max_val = None
+                        max_int = -1
+                        for opt in options:
+                            val = opt.get('value', '').strip()
+                            if not val:
+                                continue
+                            try:
+                                val_int = int(val)
+                                if val_int > max_int:
+                                    max_int = val_int
+                                    max_val = val
+                            except ValueError:
+                                if max_val is None:
+                                    max_val = val
+                        if max_val is not None:
+                            submit_data[name] = max_val
+                    
+                    if input_name not in submit_data:
+                        submit_data[input_name] = url
+                    
+                    actual_btn = target_form.find('button', type='submit') if target_form else submit_btn
+                    if actual_btn and actual_btn.get('name'):
+                        submit_data[actual_btn.get('name')] = actual_btn.get('value', '')
+                    
+                    submit_url = f"{self.base_url}/{submit_action}" if not submit_action.startswith('http') else submit_action
+                    boost_r = self.session.post(submit_url, headers=ajax_headers, data=submit_data, timeout=45)
+                    
+                    decoded_boost = self._decode_response(boost_r.text)
+                    
+                    amount, kind, msg = self._parse_result(decoded_boost)
+                    
+                    if not msg:
+                        soup_clean = BeautifulSoup(decoded_boost, 'html.parser')
+                        msg = soup_clean.get_text(separator=' ').strip()[:200]
+                    
+                    return {
+                        "success": True,
+                        "amount": amount or 100,
+                        "kind": kind or "unit",
+                        "message": msg or "Thành công",
+                        "cooldown": self._extract_timer(decoded_boost)
+                    }
+            
+            amount, kind, msg = self._parse_result(decoded_response)
+            return {
+                "success": True,
+                "amount": amount or 100,
+                "kind": kind or "unit",
+                "message": msg or "Thành công",
+                "cooldown": self._extract_timer(decoded_response)
+            }
+            
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+    
+    def _decode_response(self, text: str) -> str:
+        """Decode response từ zefoy (base64 reversed)"""
+        text = text.strip()
+        if not text:
+            return text
+        
+        def try_decode(val):
+            try:
+                reversed_val = val[::-1]
+                url_decoded = unquote(reversed_val)
+                decoded = base64.b64decode(url_decoded).decode('utf-8')
+                if '<' in decoded or '{' in decoded or 'div' in decoded:
+                    return decoded
+            except Exception:
+                pass
+            try:
+                decoded = base64.b64decode(val).decode('utf-8')
+                if '<' in decoded or '{' in decoded:
+                    return decoded
+            except Exception:
+                pass
+            return val
+
+        decoded = try_decode(text)
+        if decoded != text:
+            try:
+                data = json.loads(decoded)
+                if isinstance(data, dict) and 'html' in data:
+                    return try_decode(data['html'])
+            except Exception:
+                pass
+            return decoded
+
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict) and 'html' in data:
+                return try_decode(data['html'])
+        except Exception:
+            pass
+            
+        return text
+    
+    def _extract_timer(self, html: str) -> Optional[int]:
+        """Trích xuất cooldown timer từ HTML"""
+        if not html:
+            return None
+        
+        patterns = [
+            r'var\s+ltm\s*=\s*(\d+)',
+            r'ltm\s*=\s*(\d+)',
+            r'var\s+time\s*=\s*(\d+)',
+            r'var\s+timeleft\s*=\s*(\d+)',
+            r'Please wait\s+(\d+)\s+seconds',
+            r'(\d+)\s*minute\(s\)\s*(\d+)\s*second',
+            r'wait\s+(\d+)\s*seconds',
+        ]
+        for pat in patterns:
+            m = re.search(pat, html, re.I)
+            if m:
+                if len(m.groups()) == 2:
+                    return int(m.group(1)) * 60 + int(m.group(2))
+                return int(m.group(1))
+        return None
+    
+    def _parse_result(self, html: str) -> tuple[Optional[int], Optional[str], Optional[str]]:
+        """Parse số lượng đã gửi từ HTML"""
+        if not html:
+            return None, None, None
+        
+        patterns = [
+            (r"Sent\s+(\d+)\s+([A-Za-z]+)", 1, 2),
+            (r"Successfully\s+sent\s+(\d+)\s+([A-Za-z]+)", 1, 2),
+            (r"\+\s*(\d+)\s+([A-Za-z]+)", 1, 2),
+            (r"(\d+)\s+(views?|hearts?|followers?|shares?|likes?)", 1, 2),
+            (r"Added\s+(\d+)\s+([A-Za-z]+)", 1, 2),
+        ]
+        for pat, ai, ki in patterns:
+            m = re.search(pat, html, re.I)
+            if m:
+                try:
+                    return int(m.group(ai)), m.group(ki).lower(), m.group(0).strip()
+                except:
+                    pass
+        
+        m = re.search(r'<div[^>]*class="[^"]*success[^"]*"[^>]*>([^<]+)', html, re.I)
+        if m:
+            return None, None, m.group(1).strip()
+        
+        return None, None, None
+
+
+# ============== FASTAPI APP ==============
+app = FastAPI(title="Zefoy Web API v2", version="2.0.0")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,303 +480,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import traceback
-from fastapi.responses import JSONResponse
-from fastapi.requests import Request as _Req
+# Session store
+SESSIONS: Dict[str, dict] = {}
 
-@app.exception_handler(Exception)
-async def _all_ex(request: _Req, exc: Exception):
-    tb = traceback.format_exc()
-    print("[UNHANDLED]", tb, flush=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": type(exc).__name__,
-            "message": str(exc) or "unknown error",
-            "hint": "Zefoy có thể chặn IP Render (Cloudflare). Xem log Render để chi tiết.",
-        },
-    )
-
-
-# ─────────── session store (in-memory) ────────────
-SESSIONS: dict[str, dict[str, Any]] = {}
-SESSION_TTL = 60 * 30  # 30 phút
-
-
-def _new_session_state() -> dict[str, Any]:
-    client = ZefoyClient()
-    return {
-        "client": client,
-        "created": time.time(),
-        "last_used": time.time(),
-        "services": {},        # title -> raw status
-        "services_ids": {},    # title -> action path
-        "services_status": {}, # title -> bool available
-        "video_key": None,
-        "total_sent": 0,
-        "captcha_b64": None,
-    }
-
-
-def _get(session_id: str) -> dict[str, Any]:
-    _gc()
-    st = SESSIONS.get(session_id)
-    if not st:
-        raise HTTPException(404, "session not found — bấm 'Bắt đầu' để tạo session mới")
-    st["last_used"] = time.time()
-    return st
-
-
-def _gc():
-    now = time.time()
-    dead = [k for k, v in SESSIONS.items() if now - v["last_used"] > SESSION_TTL]
-    for k in dead:
-        SESSIONS.pop(k, None)
-
-
-# ─────────── Zefoy helpers (chuyển từ run.py) ────────────
-def _decode_response(body: str) -> str:
-    """Zefoy trả về base64-reversed. Giải mã ra text sạch."""
-    if not body:
-        return ""
-    text = body.strip()
-    if text.lower() == "success":
-        return "success"
-    rev = text[::-1]
-    for candidate in (unquote(rev), rev, unquote(text), text):
-        try:
-            decoded = base64.b64decode(candidate + "=" * (-len(candidate) % 4)).decode("utf-8", errors="replace")
-            if decoded and any(c.isprintable() for c in decoded):
-                return decoded
-        except Exception:
-            continue
-    return text
-
-
-def _parse_sent_amount(html: str) -> tuple[Optional[int], Optional[str], Optional[str]]:
-    """Trích số lượng đã gửi từ HTML phản hồi."""
-    if not html:
-        return None, None, None
-    patterns = [
-        (r"Sent\s+(\d+)\s+([A-Za-z]+)", 1, 2),
-        (r"(\d+)\s+(views?|hearts?|followers?|shares?|comments?|favorites?)\s+(?:sent|added)", 1, 2),
-        (r"Successfully\s+sent\s+(\d+)\s+([A-Za-z]+)", 1, 2),
-        (r"\+\s*(\d+)\s+([A-Za-z]+)", 1, 2),
-    ]
-    for pat, ai, ki in patterns:
-        m = re.search(pat, html, re.I)
-        if m:
-            try:
-                return int(m.group(ai)), m.group(ki).lower(), m.group(0).strip()
-            except Exception:
-                pass
-    # message xanh
-    m = re.search(r"color:\s*green;?'?[^>]*>\s*([^<]+)", html, re.I)
-    if m and "Checking Timer" not in m.group(1):
-        msg = m.group(1).strip()
-        m2 = re.search(r"(\d+)", msg)
-        if m2:
-            return int(m2.group(1)), "unit", msg
-        return None, None, msg
-    return None, None, None
-
-
-def _parse_timer(html: str) -> Optional[int]:
-    if not html:
-        return None
-    for pat in [
-        r"remainingTimelogin\s*=\s*(-?\d+)",
-        r"var\s+ltm\s*=\s*(-?\d+)",
-        r"ltm\s*=\s*(-?\d+)",
-        r"Please wait\s+(\d+)\s+seconds",
-    ]:
-        m = re.search(pat, html, re.I)
-        if m:
-            v = int(m.group(1))
-            if v > 0:
-                return v
-    m = re.search(r"(\d+)\s*minute\(s\)\s*(\d+)\s*second", html, re.I)
-    if m:
-        return int(m.group(1)) * 60 + int(m.group(2))
-    return None
-
-
-def _refresh_services(st: dict[str, Any]) -> None:
-    client: ZefoyClient = st["client"]
-    resp = client.session.get(client.base_url + "/", headers={"user-agent": client.user_agent}, timeout=30)
-    html = resp.text or ""
-    st["services"], st["services_ids"], st["services_status"] = {}, {}, {}
-    try:
-        for svc in parse_services(html):
-            st["services"][svc.title] = svc.raw_status or svc.status
-            st["services_status"][svc.title] = bool(svc.available)
-            if svc.action:
-                st["services_ids"][svc.title] = svc.action
-            if svc.input_name:
-                st["video_key"] = svc.input_name
-    except Exception:
-        pass
-    # fallback regex
-    if len(st["services_ids"]) == 0:
-        for m in re.finditer(
-            r'<form action="([^"]+)">[\s\S]*?name="([^"]+)"[^>]*placeholder="Enter Video',
-            html, re.I,
-        ):
-            prev = html[max(0, m.start() - 400): m.start()]
-            tm = re.findall(r"<h5[^>]*>([^<]+)</h5>", prev)
-            title = tm[-1].strip() if tm else m.group(1)[:12]
-            st["services_ids"][title] = m.group(1)
-            st["video_key"] = m.group(2)
-            st["services"].setdefault(title, "unknown")
-            st["services_status"].setdefault(title, True)
-
-
-def _post_service(st: dict[str, Any], service: str, url: str) -> str:
-    client: ZefoyClient = st["client"]
-    action = st["services_ids"].get(service)
-    if not action:
-        _refresh_services(st)
-        action = st["services_ids"].get(service)
-    if not action:
-        raise HTTPException(400, f"Service không tìm thấy: {service}")
-    video_key = st.get("video_key")
-    if not video_key:
-        raise HTTPException(400, "video_key chưa có, thử refresh services")
-
-    token = "".join(random.choices(ascii_letters + digits, k=16))
-    boundary = f"----WebKitFormBoundary{token}"
-    parts = [
-        f'--{boundary}\r\nContent-Disposition: form-data; name="{video_key}"\r\n\r\n{url}\r\n',
-        f"--{boundary}--\r\n",
-    ]
-    body = "".join(parts)
-    target = action if str(action).startswith("http") else f"{client.base_url}/{action.lstrip('/')}"
-    resp = client.session.post(
-        target,
-        headers={
-            "content-type": f"multipart/form-data; boundary={boundary}",
-            "user-agent": client.user_agent,
-            "origin": "https://zefoy.com",
-            "referer": "https://zefoy.com/",
-            "accept": "*/*",
-        },
-        data=body.encode("utf-8"),
-        timeout=45,
-    )
-    return _decode_response(resp.text or "")
-
-
-def _post_multipart(st: dict[str, Any], service: str, fields: dict[str, str]) -> str:
-    """POST tuỳ ý các field multipart tới action của 1 service."""
-    client: ZefoyClient = st["client"]
-    action = st["services_ids"].get(service)
-    if not action:
-        _refresh_services(st)
-        action = st["services_ids"].get(service)
-    if not action:
-        raise HTTPException(400, f"Service không tìm thấy: {service}")
-    token = "".join(random.choices(ascii_letters + digits, k=16))
-    boundary = f"----WebKitFormBoundary{token}"
-    parts = []
-    for name, value in fields.items():
-        parts.append(
-            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
-        )
-    parts.append(f"--{boundary}--\r\n")
-    body = "".join(parts)
-    target = action if str(action).startswith("http") else f"{client.base_url}/{action.lstrip('/')}"
-    resp = client.session.post(
-        target,
-        headers={
-            "content-type": f"multipart/form-data; boundary={boundary}",
-            "user-agent": client.user_agent,
-            "origin": "https://zefoy.com",
-            "referer": "https://zefoy.com/",
-            "accept": "*/*",
-        },
-        data=body.encode("utf-8"),
-        timeout=45,
-    )
-    return _decode_response(resp.text or "")
-
-
-def _parse_comments(html: str) -> list[dict[str, Any]]:
-    """
-    Best-effort parse danh sách comment từ HTML Zefoy "Comments Hearts".
-
-    Zefoy render mỗi comment thành 1 khối chứa: @username, nội dung, form
-    hidden input (comment id) + <select amount> + submit button (❤).
-
-    Vì HTML có thể thay đổi, ta grep theo pattern mềm dẻo:
-      - Bắt các block có @username + hidden input (thường tên là 'cid' hoặc
-        'comment_id' hoặc chuỗi ngẫu nhiên) + select options 25/50/...
-    """
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html, "html.parser")
-    comments: list[dict[str, Any]] = []
-
-    # 1) Tìm mọi form có hidden input + select amount
-    for idx, form in enumerate(soup.find_all("form")):
-        hiddens = {
-            (i.get("name") or ""): (i.get("value") or "")
-            for i in form.find_all("input", {"type": "hidden"})
-            if i.get("name")
-        }
-        if not hiddens:
-            continue
-        # phải có <select> amount thì mới là comment form
-        select = form.find("select")
-        if not select:
-            continue
-        # username / text: lấy text gần nhất trước form
-        prev_text = ""
-        for sib in form.previous_siblings:
-            t = getattr(sib, "get_text", lambda *a, **k: str(sib))(" ", strip=True) if hasattr(sib, "get_text") else str(sib).strip()
-            if t:
-                prev_text = t
-                break
-        # username: match @name
-        m_user = re.search(r"@([A-Za-z0-9_.]{2,})", prev_text)
-        username = m_user.group(1) if m_user else ""
-        # amounts từ select
-        amounts = []
-        for opt in select.find_all("option"):
-            v = (opt.get("value") or opt.get_text(strip=True)).strip()
-            if v.isdigit():
-                amounts.append(int(v))
-        # ID logic: nếu có "cid" dùng, nếu không dùng field ngắn nhất
-        cid_field = next((k for k in hiddens if k.lower() in ("cid","comment_id","c_id")), None) \
-                    or (sorted(hiddens.keys(), key=lambda k: len(hiddens[k]))[0] if hiddens else None)
-        cid_value = hiddens.get(cid_field, "") if cid_field else ""
-        # encode toàn bộ hidden để client trả lại nguyên vẹn
-        packed = base64.urlsafe_b64encode(
-            json.dumps({"fields": hiddens, "select_name": select.get("name") or ""}).encode()
-        ).decode()
-        comments.append({
-            "index": idx,
-            "username": username,
-            "text": prev_text[:200],
-            "cid_field": cid_field,
-            "cid": cid_value,
-            "amounts": amounts or [25, 50, 100, 200, 500, 1000],
-            "packed": packed,  # client giữ nguyên, gửi lại khi run
-        })
-    return comments
-
-
-# ─────────── Pydantic models ────────────
 class StartReq(BaseModel):
     pass
-
 
 class SolveReq(BaseModel):
     session_id: str
     answer: str
 
-
 class SidReq(BaseModel):
     session_id: str
-
 
 class RunReq(BaseModel):
     session_id: str
@@ -345,243 +499,128 @@ class RunReq(BaseModel):
     url: str
 
 
-class CommentsSearchReq(BaseModel):
-    session_id: str
-    url: str
-
-
-class CommentsRunReq(BaseModel):
-    session_id: str
-    url: str
-    comment_id: str
-    amount: int = 25
-
-
-# ─────────── Routes ────────────
-from fastapi.responses import FileResponse
-_STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-
 @app.get("/")
 def root():
-    idx = os.path.join(_STATIC_DIR, "index.html")
-    if os.path.exists(idx):
-        return FileResponse(idx)
-    return {"name": "Zefoy Web API", "version": "1.0.0"}
-
-@app.get("/api")
-def api_info():
-    return {"endpoints": ["/api/start","/api/solve","/api/services","/api/run","/api/refresh_captcha"], "sessions_active": len(SESSIONS)}
-
-
-@app.get("/health")
-def health():
-    return {"ok": True, "sessions": len(SESSIONS)}
+    return {
+        "name": "Zefoy Web API v2",
+        "version": "2.0.0",
+        "endpoints": [
+            "/api/start",
+            "/api/solve", 
+            "/api/services",
+            "/api/run"
+        ]
+    }
 
 
 @app.post("/api/start")
 def start(_: StartReq = StartReq()):
-    """Tạo session mới + lấy captcha."""
+    """Tạo session mới + lấy captcha"""
     sid = uuid.uuid4().hex
-    st = _new_session_state()
-    client: ZefoyClient = st["client"]
-    captcha = client.get_captcha(refresh_session=True)
-    st["captcha_b64"] = base64.b64encode(captcha.image_bytes).decode("ascii")
-    SESSIONS[sid] = st
+    client = ZefoyClient()
+    client.initialize()
+    
+    img_data = client.get_captcha_image()
+    if not img_data:
+        raise HTTPException(500, "Không thể lấy captcha từ Zefoy")
+    
+    SESSIONS[sid] = {
+        "client": client,
+        "created": time.time(),
+        "last_used": time.time(),
+        "total_sent": 0
+    }
+    
     return {
         "session_id": sid,
-        "captcha_b64": st["captcha_b64"],
-        "captcha_mime": "image/png",
+        "captcha_b64": base64.b64encode(img_data).decode("ascii")
     }
-
-
-@app.post("/api/refresh_captcha")
-def refresh_captcha(req: SidReq):
-    st = _get(req.session_id)
-    client: ZefoyClient = st["client"]
-    captcha = client.get_captcha(refresh_session=False)
-    st["captcha_b64"] = base64.b64encode(captcha.image_bytes).decode("ascii")
-    return {"captcha_b64": st["captcha_b64"], "captcha_mime": "image/png"}
 
 
 @app.post("/api/solve")
 def solve(req: SolveReq):
-    st = _get(req.session_id)
-    client: ZefoyClient = st["client"]
-    ans = re.sub(r"[^a-zA-Z]", "", req.answer or "").lower()
-    if not ans:
-        raise HTTPException(400, "Captcha answer rỗng")
-    result = client.submit_answer(ans)
-    if not result.success:
-        # captcha sai → cấp captcha mới
-        try:
-            captcha = client.get_captcha(refresh_session=False)
-            st["captcha_b64"] = base64.b64encode(captcha.image_bytes).decode("ascii")
-        except Exception:
-            pass
+    """Giải captcha"""
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        raise HTTPException(404, "Session không tồn tại")
+    
+    client: ZefoyClient = session["client"]
+    success = client.solve_captcha(req.answer)
+    
+    if success:
+        services = client.get_services()
+        return {
+            "ok": True,
+            "services": [
+                {
+                    "name": s["title"],
+                    "available": s.get("available", False),
+                    "status": s.get("status", "Unknown")
+                }
+                for s in services
+            ]
+        }
+    else:
+        # Lấy captcha mới
+        img_data = client.get_captcha_image()
         return {
             "ok": False,
-            "message": result.message or "Captcha sai, thử lại",
-            "captcha_b64": st.get("captcha_b64"),
+            "message": "Captcha sai, thử lại",
+            "captcha_b64": base64.b64encode(img_data).decode("ascii") if img_data else None
         }
-    _refresh_services(st)
-    return {
-        "ok": True,
-        "answer": ans,
-        "services": [
-            {
-                "name": name,
-                "status": st["services"].get(name, ""),
-                "available": bool(st["services_status"].get(name, False)),
-                "has_action": name in st["services_ids"],
-            }
-            for name in st["services"]
-        ],
-    }
 
 
 @app.post("/api/services")
 def services(req: SidReq):
-    st = _get(req.session_id)
-    _refresh_services(st)
+    """Lấy danh sách dịch vụ"""
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        raise HTTPException(404, "Session không tồn tại")
+    
+    client: ZefoyClient = session["client"]
+    services = client.get_services()
+    
     return {
         "services": [
             {
-                "name": name,
-                "status": st["services"].get(name, ""),
-                "available": bool(st["services_status"].get(name, False)),
-                "has_action": name in st["services_ids"],
+                "name": s["title"],
+                "available": s.get("available", False),
+                "status": s.get("status", "Unknown")
             }
-            for name in st["services"]
+            for s in services
         ],
-        "total_sent": st.get("total_sent", 0),
+        "total_sent": session.get("total_sent", 0)
     }
 
 
 @app.post("/api/run")
 def run(req: RunReq):
-    st = _get(req.session_id)
-    # Step 1: gửi link để get confirm token
-    html1 = _post_service(st, req.service, req.url)
-    if "Session expired" in html1 or is_captcha_page(html1):
-        raise HTTPException(401, "Session hết hạn, tạo session mới")
-    if "service is currently not working" in html1.lower():
-        return {"ok": False, "message": "Service tạm không hoạt động", "html": html1[:500]}
-    timer = _parse_timer(html1)
-    if timer and timer > 0:
-        return {"ok": False, "cooldown": timer, "message": f"Đang cooldown {timer}s"}
-
-    # extract hidden field (confirm token)
-    m = re.search(
-        r'<input[^>]+type=["\']hidden["\'][^>]*name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']+)["\']',
-        html1, re.I,
-    )
-    if not m:
-        m = re.search(
-            r'<input[^>]+name=["\']([^"\']+)["\'][^>]*value=["\']([^"\']+)["\']',
-            html1, re.I,
-        )
-    if not m:
-        return {"ok": False, "message": "Không tìm thấy confirm token", "html": html1[:500]}
-    confirm_name, confirm_value = m.group(1), m.group(2)
-
-    # Step 2: gửi confirm để tick thật
-    html2 = _post_service(st, req.service, req.url)  # fallback, some services need same POST
-    # Actually the confirm step reuses the action with the token field:
-    client: ZefoyClient = st["client"]
-    action = st["services_ids"].get(req.service)
-    token = "".join(random.choices(ascii_letters + digits, k=16))
-    boundary = f"----WebKitFormBoundary{token}"
-    body = (
-        f'--{boundary}\r\nContent-Disposition: form-data; name="{confirm_name}"\r\n\r\n{confirm_value}\r\n'
-        f"--{boundary}--\r\n"
-    )
-    target = action if str(action).startswith("http") else f"{client.base_url}/{action.lstrip('/')}"
-    resp = client.session.post(
-        target,
-        headers={
-            "content-type": f"multipart/form-data; boundary={boundary}",
-            "user-agent": client.user_agent,
-            "origin": "https://zefoy.com",
-            "referer": "https://zefoy.com/",
-            "accept": "*/*",
-        },
-        data=body.encode("utf-8"),
-        timeout=45,
-    )
-    html3 = _decode_response(resp.text or "")
-
-    amount, kind, msg = _parse_sent_amount(html3)
-    timer2 = _parse_timer(html3)
-    if amount:
-        st["total_sent"] = st.get("total_sent", 0) + amount
-
-    return {
-        "ok": bool(amount or msg),
-        "amount": amount,
-        "kind": kind,
-        "message": msg or "Đã gửi (không parse được số lượng)",
-        "cooldown": timer2,
-        "total_sent": st.get("total_sent", 0),
-        "service": req.service,
-    }
-
-
-
-@app.post("/api/comments_search")
-def comments_search(req: CommentsSearchReq):
-    """Bước 1 Comments Hearts: submit URL → trả về list comment để user chọn."""
-    st = _get(req.session_id)
-    # đảm bảo có service Comments Hearts
-    if "Comments Hearts" not in st.get("services_ids", {}):
-        _refresh_services(st)
-    if "Comments Hearts" not in st.get("services_ids", {}):
-        raise HTTPException(400, "Zefoy chưa mở dịch vụ Comments Hearts")
-    html1 = _post_service(st, "Comments Hearts", req.url)
-    if "Session expired" in html1 or is_captcha_page(html1):
-        raise HTTPException(401, "Session hết hạn, tạo session mới")
-    timer = _parse_timer(html1)
-    if timer and timer > 0:
-        return {"ok": False, "cooldown": timer, "message": f"Đang cooldown {timer}s"}
-    comments = _parse_comments(html1)
-    return {
-        "ok": True,
-        "comments": comments,
-        "count": len(comments),
-        # Cho debug: nếu 0 comment, client hiển thị HTML raw để dev sửa parser
-        "raw_head": html1[:1500] if not comments else "",
-    }
-
-
-@app.post("/api/comments_run")
-def comments_run(req: CommentsRunReq):
-    """Bước 2 Comments Hearts: gửi tim vào 1 comment cụ thể (packed từ search)."""
-    st = _get(req.session_id)
-    try:
-        info = json.loads(base64.urlsafe_b64decode(req.comment_id.encode()).decode())
-    except Exception:
-        raise HTTPException(400, "comment_id không hợp lệ (thiếu packed)")
-    fields = dict(info.get("fields") or {})
-    select_name = info.get("select_name") or ""
-    if select_name and req.amount:
-        fields[select_name] = str(int(req.amount))
-    # thêm URL video vào field tương ứng nếu form yêu cầu
-    video_key = st.get("video_key")
-    if video_key and video_key not in fields:
-        fields[video_key] = req.url
-    html = _post_multipart(st, "Comments Hearts", fields)
-    amount, kind, msg = _parse_sent_amount(html)
-    timer2 = _parse_timer(html)
-    if amount:
-        st["total_sent"] = st.get("total_sent", 0) + amount
-    return {
-        "ok": bool(amount or msg),
-        "amount": amount,
-        "kind": kind or "hearts",
-        "message": msg or "Đã gửi (không parse được số lượng)",
-        "cooldown": timer2,
-        "total_sent": st.get("total_sent", 0),
-        "service": "Comments Hearts",
-    }
+    """Thực hiện buff"""
+    session = SESSIONS.get(req.session_id)
+    if not session:
+        raise HTTPException(404, "Session không tồn tại")
+    
+    client: ZefoyClient = session["client"]
+    result = client.perform_action(req.service, req.url)
+    
+    if result.get("success"):
+        amount = result.get("amount", 0)
+        session["total_sent"] = session.get("total_sent", 0) + amount
+        
+        return {
+            "ok": True,
+            "amount": amount,
+            "kind": result.get("kind", "unit"),
+            "message": result.get("message", "Thành công"),
+            "cooldown": result.get("cooldown"),
+            "total_sent": session["total_sent"]
+        }
+    else:
+        return {
+            "ok": False,
+            "message": result.get("message", "Lỗi không xác định"),
+            "cooldown": result.get("cooldown")
+        }
 
 
 if __name__ == "__main__":
