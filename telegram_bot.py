@@ -1,6 +1,6 @@
 """
 Telegram Bot for Zefoy Buff - Standalone
-Chạy riêng trên VPS hoặc máy tính
+Chạy trên Render Worker
 """
 
 import os
@@ -12,11 +12,11 @@ import requests
 from datetime import datetime
 from typing import Optional
 
-# ============== CONFIG ==============
-BOT_TOKEN = "8122755073:AAHrE1SxUJbG4-K55tw8f_yHH1DBDp2N-xg"  # Token của bạn
-API_URL = "https://vuachuamduc.onrender.com"  # URL Render của bạn
-CHANNEL_LINK = "https://t.me/+uH22KBhxe51jYjM1"  # Link channel của bạn
-ADMIN_IDS = [6214458926]  # ID admin của bạn
+# ============== LẤY CONFIG TỪ ENVIRONMENT ==============
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8122755073:AAHrE1SxUJbG4-K55tw8f_yHH1DBDp2N-xg")
+API_URL = os.environ.get("API_URL", "https://vuachuamduc.onrender.com")
+CHANNEL_LINK = os.environ.get("TELEGRAM_CHANNEL_LINK", "https://t.me/+uH22KBhxe51jYjM1")
+ADMIN_IDS = [int(id.strip()) for id in os.environ.get("ADMIN_IDS", "6214458926").split(",") if id.strip()]
 
 # Database
 DB_FILE = "telegram_users.json"
@@ -83,6 +83,7 @@ class ZefoyTelegramBot:
         self.update_id = 0
         self.pending_sessions = {}
         self.API_URL = API_URL
+        self.ADMIN_IDS = ADMIN_IDS
     
     def _extract_channel_username(self) -> str:
         match = re.search(r"t\.me/([^/\s?]+)", self.channel_link)
@@ -153,7 +154,7 @@ class ZefoyTelegramBot:
         print(f"📩 Received: {text[:50]} from @{username}")
         
         # Check channel membership (bỏ qua admin)
-        if int(user_id) not in ADMIN_IDS and not self.is_member(chat_id):
+        if int(user_id) not in self.ADMIN_IDS and not self.is_member(chat_id):
             self.send_message(
                 chat_id,
                 f"❌ Bạn cần tham gia kênh {self.channel_link} để dùng bot!\n"
@@ -271,7 +272,6 @@ class ZefoyTelegramBot:
         self.send_message(chat_id, f"⏳ Đang buff {service}...")
         
         try:
-            # Gọi API trên Render
             start_resp = requests.post(f"{self.API_URL}/api/start", json={}, timeout=30)
             if start_resp.status_code != 200:
                 self.send_message(chat_id, f"❌ Lỗi kết nối server: {start_resp.status_code}")
@@ -282,65 +282,6 @@ class ZefoyTelegramBot:
             captcha_b64 = session_data.get("captcha_b64")
             
             if captcha_b64:
-                # Thử auto solve captcha (nếu có OCR)
-                try:
-                    import base64 as b64
-                    img_bytes = b64.b64decode(captcha_b64)
-                    
-                    # Thử dùng OCR
-                    try:
-                        from zefoy.ocr import solve_with_fallbacks
-                        answer = solve_with_fallbacks(img_bytes)
-                    except:
-                        # Fallback: dùng ddddocr
-                        try:
-                            import ddddocr
-                            ocr = ddddocr.DdddOcr(show_ad=False)
-                            answer = re.sub(r"[^a-zA-Z]", "", ocr.classification(img_bytes) or "").lower()
-                        except:
-                            answer = None
-                    
-                    if answer:
-                        solve_resp = requests.post(
-                            f"{self.API_URL}/api/solve",
-                            json={"session_id": session_id, "answer": answer},
-                            timeout=30
-                        )
-                        if solve_resp.status_code == 200:
-                            solve_data = solve_resp.json()
-                            if solve_data.get("ok"):
-                                run_resp = requests.post(
-                                    f"{self.API_URL}/api/run",
-                                    json={"session_id": session_id, "service": service.capitalize(), "url": url},
-                                    timeout=60
-                                )
-                                if run_resp.status_code == 200:
-                                    result = run_resp.json()
-                                    if result.get("ok"):
-                                        amount = result.get("amount", 0)
-                                        db.increment_daily(user_id)
-                                        total = db.get(user_id).get("total_usage", 0)
-                                        msg = (
-                                            f"✅ <b>Buff thành công!</b>\n\n"
-                                            f"📊 +{amount} {service}\n"
-                                            f"📅 Hôm nay: {db.get_daily_usage(user_id)}/15\n"
-                                            f"📈 Tổng: {total}\n"
-                                            f"🔗 {url}"
-                                        )
-                                        self.send_message(chat_id, msg)
-                                    else:
-                                        cooldown = result.get("cooldown")
-                                        if cooldown:
-                                            self.send_message(chat_id, f"⏳ Cooldown {cooldown}s")
-                                        else:
-                                            self.send_message(chat_id, f"❌ {result.get('message', 'Lỗi')}")
-                                else:
-                                    self.send_message(chat_id, "❌ Lỗi khi buff")
-                                return
-                except Exception as e:
-                    print(f"OCR error: {e}")
-                    pass
-                
                 # Gửi captcha cho user
                 self.send_photo(
                     chat_id,
@@ -363,9 +304,9 @@ class ZefoyTelegramBot:
         self.running = True
         print(f"🤖 Bot started!")
         print(f"📢 Channel: {self.channel_link}")
-        print(f"👑 Admins: {ADMIN_IDS}")
+        print(f"👑 Admins: {self.ADMIN_IDS}")
         print(f"🔗 API: {self.API_URL}")
-        print(f"✅ Bot is running... Press Ctrl+C to stop")
+        print(f"✅ Bot is running...")
         
         while self.running:
             try:
@@ -377,7 +318,6 @@ class ZefoyTelegramBot:
                         self.update_id = update["update_id"] + 1
                         self.process_update(update)
                 else:
-                    print(f"⚠️ API error: {resp}")
                     time.sleep(5)
             except Exception as e:
                 print(f"❌ Bot error: {e}")
@@ -393,19 +333,8 @@ if __name__ == "__main__":
     print("=" * 50)
     
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("❌ Vui lòng set BOT_TOKEN trong file telegram_bot.py!")
-        exit(1)
-    
-    if API_URL == "https://your-app.onrender.com":
-        print("❌ Vui lòng set API_URL trong file telegram_bot.py!")
+        print("❌ Vui lòng set TELEGRAM_BOT_TOKEN trong environment!")
         exit(1)
     
     bot = ZefoyTelegramBot(BOT_TOKEN)
-    
-    try:
-        bot.run()
-    except KeyboardInterrupt:
-        print("\n🛑 Bot stopped by user")
-        bot.stop()
-    except Exception as e:
-        print(f"❌ Fatal error: {e}")
+    bot.run()
