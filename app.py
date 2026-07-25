@@ -22,6 +22,7 @@ import threading
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 from bs4 import BeautifulSoup
 import requests
@@ -76,7 +77,7 @@ def _new_session_state() -> dict[str, Any]:
         "captcha_b64": None,
         "captcha_encoded": None,
         "initialized": False,
-        "cooldown_until": 0,  # timestamp when cooldown ends
+        "cooldown_until": 0,
         "last_run": 0,
     }
 
@@ -114,11 +115,9 @@ def _init_session(st: dict[str, Any]) -> None:
         'user-agent': st["user_agent"],
     })
     
-    # Get homepage to establish session
     resp = session.get(f"{st['base_url']}/", timeout=30)
     resp.raise_for_status()
     
-    # Set guard cookies
     zf = hashlib.md5(str(int(time.time() * 1000)).encode()).hexdigest()
     session.cookies.set("zf", zf, path="/")
     session.cookies.set("za", "200", path="/")
@@ -148,7 +147,6 @@ def _get_captcha_image(st: dict[str, Any]) -> bytes:
     if not data:
         raise Exception("Empty captcha payload")
     
-    # Find encoded value
     encoded = None
     key = hashlib.md5(user_agent.encode()).hexdigest()
     if key in data:
@@ -158,7 +156,6 @@ def _get_captcha_image(st: dict[str, Any]) -> bytes:
     else:
         raise Exception(f"Payload key {key} not found")
     
-    # Decode image path
     once = base64.b64decode(encoded)
     twice = base64.b64decode(once)
     image_path = twice.decode('utf-8').strip()
@@ -166,7 +163,6 @@ def _get_captcha_image(st: dict[str, Any]) -> bytes:
     if not image_path.startswith("/"):
         image_path = "/" + image_path
     
-    # Download image
     url = f"{base_url}{image_path}"
     resp = session.get(url, timeout=30)
     resp.raise_for_status()
@@ -259,7 +255,6 @@ def _refresh_services(st: dict[str, Any]) -> None:
     services = []
     service_map = {}
     
-    # Find all service cards
     for card in soup.find_all('div', class_='colsmenu'):
         title_tag = card.find('h5', class_='card-title')
         if not title_tag:
@@ -306,7 +301,6 @@ def _refresh_services(st: dict[str, Any]) -> None:
             if input_name:
                 st["video_key"] = input_name
         elif is_active:
-            # Try to find hidden form for this service
             btn_class = ""
             if btn:
                 for cls in btn.get('class', []):
@@ -446,7 +440,6 @@ def _perform_action(st: dict[str, Any], service: str, url: str) -> dict[str, Any
     base_url = st["base_url"]
     service_map = st.get("service_map", {})
     
-    # Check global cooldown
     now = time.time()
     if st.get("cooldown_until", 0) > now:
         remaining = int(st["cooldown_until"] - now)
@@ -619,11 +612,152 @@ class RunReq(BaseModel):
     url: str
 
 # ============== Routes ==============
-from fastapi.responses import FileResponse
+
+# Lấy đường dẫn tuyệt đối
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 @app.get("/")
-def root():
-    return FileResponse("index.html")
+async def root():
+    """Phục vụ file index.html"""
+    # Thử tìm index.html trong thư mục gốc
+    index_path = os.path.join(BASE_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    
+    # Thử tìm trong thư mục static
+    static_index = os.path.join(BASE_DIR, "static", "index.html")
+    if os.path.exists(static_index):
+        return FileResponse(static_index)
+    
+    # Fallback: Trả về HTML trực tiếp
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html lang="vi">
+    <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Zefoy Buff Panel</title>
+    <style>
+    :root{--bg:#0f1220;--card:#1a1e33;--fg:#e8ecff;--mut:#9aa3c7;--pri:#6c8cff;--ok:#37d67a;--err:#ff5c7a;--bd:#2a2f4f}
+    *{box-sizing:border-box}body{margin:0;font-family:system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+    .wrap{max-width:720px;margin:24px auto;padding:0 16px}
+    h1{font-size:20px;margin:0 0 16px}h2{font-size:15px;margin:0 0 10px;color:var(--pri)}
+    .card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:14px}
+    .btn{background:var(--pri);color:#fff;border:0;padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:600}
+    .btn.ghost{background:transparent;border:1px solid var(--bd);color:var(--fg)}
+    .btn.ok{background:var(--ok)}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    input,select{background:#0f1220;color:var(--fg);border:1px solid var(--bd);padding:10px;border-radius:8px;width:100%;font-size:14px}
+    .row{display:flex;gap:8px;margin:8px 0}.row>*{flex:1}
+    .captcha{background:#fff;padding:8px;border-radius:8px;display:inline-block}
+    .captcha img{display:block;max-width:220px}
+    .mut{color:var(--mut);font-size:13px}.hidden{display:none}
+    .stat{display:inline-block;background:#0f1220;border:1px solid var(--bd);padding:8px 12px;border-radius:8px;margin:4px 6px 0 0}
+    .stat b{color:var(--pri)}
+    #log{max-height:220px;overflow:auto;font-size:12px;background:#0f1220;padding:8px;border-radius:8px;border:1px solid var(--bd);white-space:pre-wrap}
+    .err{color:var(--err)}.ok{color:var(--ok)}
+    </style>
+    </head>
+    <body>
+    <div class="wrap">
+    <h1>⚡ Zefoy Buff Panel</h1>
+
+    <div class="card">
+      <h2>1. Lấy captcha</h2>
+      <button class="btn" id="btnStart">▶ Bắt đầu / Lấy captcha</button>
+      <div id="capBox" class="hidden" style="margin-top:12px">
+        <div class="captcha"><img id="capImg" alt="captcha"/></div>
+        <button class="btn ghost" id="btnRefresh">🔄 Ảnh khác</button>
+        <div class="row"><input id="capAns" placeholder="Nhập chữ (chỉ chữ cái)" autocomplete="off"/><button class="btn ok" id="btnSolve">✔ Gửi</button></div>
+        <div class="mut">session: <code id="sid"></code></div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="svcCard">
+      <h2>2. Chọn service & link</h2>
+      <div class="row"><select id="svc"></select><button class="btn ghost" id="btnReload">↻</button></div>
+      <input id="vurl" placeholder="https://www.tiktok.com/@user/video/..."/>
+      <div class="row"><button class="btn" id="btnRun">🚀 Buff</button><label style="display:flex;align-items:center;gap:6px;padding-left:8px"><input type="checkbox" id="loop"/>Lặp</label></div>
+    </div>
+
+    <div class="card hidden" id="statCard">
+      <h2>3. Kết quả</h2>
+      <div><span class="stat">Tổng: <b id="tot">0</b></span><span class="stat">Lượt gần nhất: <b id="lst">–</b></span><span class="stat">Cooldown: <b id="cd">–</b></span></div>
+      <div id="log" style="margin-top:10px"></div>
+    </div>
+    </div>
+
+    <script>
+    const API = location.origin;
+    let SID = null;
+    let cooldownInterval = null;
+
+    function log(m,cls){const d=document.createElement('div');if(cls)d.className=cls;d.textContent='['+new Date().toLocaleTimeString()+'] '+m;document.getElementById('log').prepend(d)}
+    async function call(path, body){
+      const r = await fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+      let j; try{j=await r.json()}catch(e){throw new Error('Server trả về không phải JSON (HTTP '+r.status+')')}
+      if(!r.ok) throw new Error(j.message||j.error||('HTTP '+r.status));
+      return j;
+    }
+    function showCap(b64){document.getElementById('capBox').classList.remove('hidden');document.getElementById('capImg').src='data:image/png;base64,'+b64}
+    function renderSvc(list){
+      const sel=document.getElementById('svc');sel.innerHTML='';
+      list.forEach(s=>{const o=document.createElement('option');o.value=s.name;o.textContent=(s.available?'🟢 ':'🔴 ')+s.name+' — '+s.status;if(!s.available||!s.has_action)o.disabled=true;sel.appendChild(o)});
+      document.getElementById('svcCard').classList.remove('hidden');
+      document.getElementById('statCard').classList.remove('hidden');
+    }
+    function updateCooldown(seconds) {
+      const cdEl = document.getElementById('cd');
+      if (cooldownInterval) { clearInterval(cooldownInterval); cooldownInterval = null; }
+      if (!seconds || seconds <= 0) { cdEl.textContent = '–'; return; }
+      let remaining = seconds;
+      cdEl.textContent = remaining + 's';
+      cooldownInterval = setInterval(() => {
+        remaining--;
+        if (remaining <= 0) {
+          cdEl.textContent = '–';
+          clearInterval(cooldownInterval);
+          cooldownInterval = null;
+        } else {
+          cdEl.textContent = remaining + 's';
+        }
+      }, 1000);
+    }
+    document.getElementById('btnStart').onclick=async()=>{
+      try{log('Đang lấy captcha...');const j=await call('/api/start');SID=j.session_id;document.getElementById('sid').textContent=SID.slice(0,8);showCap(j.captcha_b64);log('OK — nhập captcha','ok')}
+      catch(e){log('Lỗi: '+e.message,'err')}
+    };
+    document.getElementById('btnRefresh').onclick=async()=>{try{const j=await call('/api/refresh_captcha',{session_id:SID});showCap(j.captcha_b64)}catch(e){log('Lỗi: '+e.message,'err')}};
+    document.getElementById('btnSolve').onclick=async()=>{
+      const a=document.getElementById('capAns').value.trim();if(!a)return;
+      try{const j=await call('/api/solve',{session_id:SID,answer:a});
+        if(!j.ok){log('Captcha sai, thử lại','err');if(j.captcha_b64)showCap(j.captcha_b64);return}
+        log('Captcha OK','ok');renderSvc(j.services)}
+      catch(e){log('Lỗi: '+e.message,'err')}
+    };
+    document.getElementById('btnReload').onclick=async()=>{try{const j=await call('/api/services',{session_id:SID});renderSvc(j.services);document.getElementById('tot').textContent=j.total_sent||0}catch(e){log('Lỗi: '+e.message,'err')}};
+    async function runOnce(){
+      const svc=document.getElementById('svc').value;const url=document.getElementById('vurl').value.trim();
+      if(!url){log('Thiếu link','err');return}
+      try{const j=await call('/api/run',{session_id:SID,service:svc,url:url});
+        if(j.cooldown){updateCooldown(j.cooldown);log('⏳ Cooldown '+j.cooldown+'s','err')}
+        if(j.amount){document.getElementById('lst').textContent=j.amount+' '+(j.kind||'');document.getElementById('tot').textContent=j.total_sent||'0';log('✅ +'+j.amount+' '+(j.kind||''),'ok')}
+        else if(j.message){log('ℹ️ '+j.message,'info')}
+      }catch(e){log('❌ Lỗi: '+e.message,'err')}
+    }
+    document.getElementById('btnRun').onclick=async()=>{
+      await runOnce();
+      if(document.getElementById('loop').checked){
+        const t=setInterval(async()=>{
+          if(!document.getElementById('loop').checked){clearInterval(t);return}
+          await runOnce();
+        },15000);
+      }
+    };
+    </script>
+    </body>
+    </html>
+    """)
 
 @app.get("/api")
 def api_info():
@@ -682,7 +816,6 @@ def solve(req: SolveReq):
     try:
         result = _submit_captcha(st, ans)
         if not result:
-            # Refresh captcha on fail
             img_data = _get_captcha_image(st)
             st["captcha_b64"] = base64.b64encode(img_data).decode("ascii")
             return {
@@ -739,7 +872,6 @@ def run(req: RunReq):
     st = _get(req.session_id)
     
     try:
-        # Check cooldown first
         now = time.time()
         if st.get("cooldown_until", 0) > now:
             remaining = int(st["cooldown_until"] - now)
