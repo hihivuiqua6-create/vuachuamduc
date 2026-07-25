@@ -1,6 +1,5 @@
 """
-Telegram Bot for Zefoy Buff - Standalone
-Chạy trên Render Worker
+Telegram Bot for Zefoy Buff - Render Worker
 """
 
 import os
@@ -10,11 +9,10 @@ import json
 import threading
 import requests
 from datetime import datetime
-from typing import Optional
 
 # ============== CONFIG ==============
 BOT_TOKEN = "8122755073:AAHrE1SxUJbG4-K55tw8f_yHH1DBDp2N-xg"
-API_URL = "https://vuachuamduc.onrender.com"  # ← ĐÚNG URL RENDER CỦA BẠN
+API_URL = "https://vuachuamduc.onrender.com"
 CHANNEL_LINK = "https://t.me/+uH22KBhxe51jYjM1"
 ADMIN_IDS = [6214458926]
 
@@ -62,7 +60,6 @@ class UserDB:
             user["last_date"] = today
         user["daily_usage"] = user.get("daily_usage", 0) + 1
         user["total_usage"] = user.get("total_usage", 0) + 1
-        user["last_used"] = datetime.now().isoformat()
         self.update(user_id, user)
         return user["daily_usage"]
     
@@ -82,6 +79,7 @@ class ZefoyTelegramBot:
         self.update_id = 0
         self.pending_sessions = {}
         self.API_URL = API_URL
+        self.ADMIN_IDS = ADMIN_IDS
     
     def _extract_channel_username(self) -> str:
         match = re.search(r"t\.me/([^/\s?]+)", self.channel_link)
@@ -95,25 +93,16 @@ class ZefoyTelegramBot:
             resp = requests.post(url, json=data, timeout=30)
             return resp.json()
         except Exception as e:
-            print(f"Telegram API error: {e}")
+            print(f"❌ API Error: {e}")
             return {"ok": False}
     
     def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML") -> bool:
-        data = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
-        result = self._request("sendMessage", data)
-        return result.get("ok", False)
-    
-    def send_photo(self, chat_id: int, photo_base64: str, caption: str = "") -> bool:
         try:
-            data = {
-                "chat_id": chat_id,
-                "photo": photo_base64,
-                "caption": caption,
-                "parse_mode": "HTML"
-            }
-            result = self._request("sendPhoto", data)
+            data = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+            result = self._request("sendMessage", data)
             return result.get("ok", False)
-        except:
+        except Exception as e:
+            print(f"❌ Send message error: {e}")
             return False
     
     def is_member(self, user_id: int) -> bool:
@@ -125,19 +114,8 @@ class ZefoyTelegramBot:
                 return status in ["member", "administrator", "creator"]
             return False
         except Exception as e:
-            print(f"Check member error: {e}")
+            print(f"❌ Check member error: {e}")
             return False
-    
-    def broadcast(self, text: str) -> int:
-        sent = 0
-        for uid in db.data.keys():
-            try:
-                if self.send_message(int(uid), f"📢 {text}"):
-                    sent += 1
-                time.sleep(0.1)
-            except:
-                pass
-        return sent
     
     def process_update(self, update: dict):
         if "message" not in update:
@@ -149,10 +127,10 @@ class ZefoyTelegramBot:
         username = msg["from"].get("username", "unknown")
         text = msg.get("text", "")
         
-        print(f"📩 Received: {text[:50]} from @{username} | Chat ID: {chat_id}")
+        print(f"📩 {text[:50]} from @{username} (ID: {user_id})")
         
         # Check channel membership (bỏ qua admin)
-        if int(user_id) not in ADMIN_IDS and not self.is_member(chat_id):
+        if int(user_id) not in self.ADMIN_IDS and not self.is_member(chat_id):
             self.send_message(
                 chat_id,
                 f"❌ Bạn cần tham gia kênh {self.channel_link} để dùng bot!\n"
@@ -200,12 +178,10 @@ class ZefoyTelegramBot:
         elif cmd == "/stats" and db.is_admin(user_id):
             total_users = len(db.data)
             total_usage = sum(u.get("total_usage", 0) for u in db.data.values())
-            today_usage = sum(1 for u in db.data.values() if u.get("last_date") == datetime.now().strftime("%Y-%m-%d"))
             msg = (
                 f"📊 <b>Bot Stats</b>\n\n"
                 f"👥 Users: {total_users}\n"
                 f"📈 Total buffs: {total_usage}\n"
-                f"📅 Today: {today_usage}\n"
                 f"🟢 Status: Online"
             )
             self.send_message(chat_id, msg)
@@ -213,7 +189,14 @@ class ZefoyTelegramBot:
         elif cmd == "/broadcast" and db.is_admin(user_id):
             if len(text.split()) > 1:
                 broadcast_text = text.split(" ", 1)[1]
-                sent = self.broadcast(broadcast_text)
+                sent = 0
+                for uid in db.data.keys():
+                    try:
+                        if self.send_message(int(uid), f"📢 {broadcast_text}"):
+                            sent += 1
+                        time.sleep(0.1)
+                    except:
+                        pass
                 self.send_message(chat_id, f"✅ Đã gửi broadcast tới {sent} users")
             else:
                 self.send_message(chat_id, "⚠️ /broadcast <nội dung>")
@@ -238,14 +221,10 @@ class ZefoyTelegramBot:
     def _handle_buff(self, chat_id: int, user_id: str, username: str, text: str):
         daily = db.get_daily_usage(user_id)
         if daily >= 15:
-            self.send_message(
-                chat_id,
-                f"❌ Hết 15 lượt hôm nay!\n"
-                f"📊 {daily}/15 - Đợi ngày mai nhé!"
-            )
+            self.send_message(chat_id, f"❌ Hết 15 lượt hôm nay! {daily}/15")
             return
         
-        services = ["hearts", "views", "followers", "shares", "comments", "favorites"]
+        services = ["hearts", "views", "followers", "shares", "comments"]
         service = None
         for svc in services:
             if svc in text.lower():
@@ -255,29 +234,23 @@ class ZefoyTelegramBot:
         if not service:
             self.send_message(
                 chat_id,
-                f"❌ Không tìm thấy dịch vụ.\n"
-                f"Dịch vụ: {', '.join(services)}\n"
-                f"Ví dụ: <code>https://tiktok.com/... hearts</code>"
+                f"❌ Dịch vụ: {', '.join(services)}\nVí dụ: https://tiktok.com/... hearts"
             )
             return
         
         url_match = re.search(r"https?://[^\s]+", text)
         if not url_match:
-            self.send_message(chat_id, "❌ Không tìm thấy link TikTok")
+            self.send_message(chat_id, "❌ Không thấy link TikTok")
             return
         
         url = url_match.group(0)
         self.send_message(chat_id, f"⏳ Đang buff {service}...")
         
         try:
-            # KIỂM TRA API_URL CÓ HOẠT ĐỘNG KHÔNG
-            print(f"🔗 Calling API: {self.API_URL}/api/start")
-            
+            # Gọi API
             start_resp = requests.post(f"{self.API_URL}/api/start", json={}, timeout=30)
-            print(f"📡 API Response: {start_resp.status_code}")
-            
             if start_resp.status_code != 200:
-                self.send_message(chat_id, f"❌ Lỗi kết nối server: {start_resp.status_code}")
+                self.send_message(chat_id, f"❌ Lỗi server: {start_resp.status_code}")
                 return
             
             session_data = start_resp.json()
@@ -285,11 +258,19 @@ class ZefoyTelegramBot:
             captcha_b64 = session_data.get("captcha_b64")
             
             if captcha_b64:
-                self.send_photo(
+                self.send_message(
                     chat_id,
-                    f"data:image/png;base64,{captcha_b64}",
-                    f"🔐 Nhập captcha này:\nGửi /captcha <mã> để tiếp tục"
+                    f"🔐 Nhập captcha: /captcha <mã>\n"
+                    f"📸 Ảnh captcha đã gửi kèm theo"
                 )
+                
+                # Gửi ảnh captcha
+                try:
+                    import base64 as b64
+                    self._send_photo(chat_id, captcha_b64, f"Nhập captcha cho {service}")
+                except:
+                    pass
+                
                 self.pending_sessions[user_id] = {
                     "session_id": session_id,
                     "service": service,
@@ -299,18 +280,28 @@ class ZefoyTelegramBot:
             
             self.send_message(chat_id, "❌ Không lấy được captcha")
         except Exception as e:
-            print(f"❌ Buff error: {e}")
             self.send_message(chat_id, f"❌ Lỗi: {str(e)}")
     
+    def _send_photo(self, chat_id: int, b64_data: str, caption: str = ""):
+        try:
+            data = {
+                "chat_id": chat_id,
+                "photo": f"data:image/png;base64,{b64_data}",
+                "caption": caption
+            }
+            self._request("sendPhoto", data)
+        except Exception as e:
+            print(f"❌ Send photo error: {e}")
+    
     def run(self):
-        """Main loop - get updates"""
         self.running = True
         print("=" * 50)
-        print(f"🤖 Bot started!")
+        print("🤖 Zefoy Telegram Bot")
+        print("=" * 50)
         print(f"📢 Channel: {self.channel_link}")
-        print(f"👑 Admins: {ADMIN_IDS}")
+        print(f"👑 Admins: {self.ADMIN_IDS}")
         print(f"🔗 API: {self.API_URL}")
-        print(f"✅ Bot is running...")
+        print("✅ Bot is running...")
         print("=" * 50)
         
         while self.running:
@@ -323,39 +314,15 @@ class ZefoyTelegramBot:
                         self.update_id = update["update_id"] + 1
                         self.process_update(update)
                 else:
-                    print(f"⚠️ API error: {resp}")
                     time.sleep(5)
             except Exception as e:
                 print(f"❌ Bot error: {e}")
                 time.sleep(5)
-    
-    def stop(self):
-        self.running = False
 
 # ============== MAIN ==============
 if __name__ == "__main__":
-    print("=" * 50)
-    print("🤖 Zefoy Telegram Bot")
-    print("=" * 50)
-    
-    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        print("❌ Vui lòng set BOT_TOKEN!")
-        exit(1)
-    
-    # Kiểm tra API_URL
-    try:
-        test = requests.get(f"{API_URL}/health", timeout=10)
-        print(f"✅ API Server: {API_URL} - Status: {test.status_code}")
-    except Exception as e:
-        print(f"❌ API Server: {API_URL} - Lỗi: {e}")
-        print("⚠️ Bot vẫn chạy nhưng KHÔNG THỂ BUFF nếu API_URL sai!")
-    
     bot = ZefoyTelegramBot(BOT_TOKEN)
-    
     try:
         bot.run()
     except KeyboardInterrupt:
-        print("\n🛑 Bot stopped by user")
-        bot.stop()
-    except Exception as e:
-        print(f"❌ Fatal error: {e}")
+        print("\n🛑 Bot stopped")
