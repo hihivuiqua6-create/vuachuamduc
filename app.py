@@ -73,10 +73,11 @@ def _new_session_state() -> dict[str, Any]:
         "initialized": False,
         "cooldown_until": 0,
         "last_run": 0,
-        "comments_cache": [],
-        "selected_comment": None,
-        "comment_action": None,
-        "comment_input_name": None,
+        # Comments Heart
+        "comments_cache": [],  # Danh sách comment đã fetch
+        "selected_comment": None,  # Comment được chọn
+        "comment_action": None,  # Action của service Comments Hearts
+        "comment_input_name": None,  # Input name của service Comments Hearts
     }
 
 def _get(session_id: str) -> dict[str, Any]:
@@ -407,8 +408,6 @@ def _parse_result(html: str) -> tuple[Optional[int], Optional[str], Optional[str
         (r"(\d+)\s+(views?|hearts?|followers?|shares?|likes?)", 1, 2),
         (r"Added\s+(\d+)\s+([A-Za-z]+)", 1, 2),
         (r"(\d+)\s+([A-Za-z]+)\s+added", 1, 2),
-        (r"(\d+)\s+heart", 1, 2),
-        (r"heart\s+(\d+)", 1, 2),
     ]
     for pat, ai, ki in patterns:
         m = re.search(pat, html, re.I)
@@ -417,14 +416,6 @@ def _parse_result(html: str) -> tuple[Optional[int], Optional[str], Optional[str
                 return int(m.group(ai)), m.group(ki).lower(), m.group(0).strip()
             except:
                 pass
-    
-    # Thử tìm số trong message
-    m = re.search(r'(\d+)\s+', html)
-    if m:
-        try:
-            return int(m.group(1)), "hearts", m.group(0).strip()
-        except:
-            pass
     
     m = re.search(r'<div[^>]*class="[^"]*success[^"]*"[^>]*>([^<]+)', html, re.I)
     if m:
@@ -437,117 +428,68 @@ def _parse_result(html: str) -> tuple[Optional[int], Optional[str], Optional[str
     return None, None, None
 
 def _parse_comments(html: str) -> list[dict[str, Any]]:
-    """Parse comments từ Zefoy Comments Hearts page - Cải tiến ổn định"""
+    """Parse comments từ Zefoy Comments Hearts page"""
     soup = BeautifulSoup(html, 'html.parser')
     comment_items = []
     
     forms = soup.find_all('form')
     for form in forms:
         username = None
-        comment_text = ""
-        heart_count = "0"
         
-        # === TÌM USERNAME ===
-        # Cách 1: Từ class kadi-rengi
+        # Tìm username (có @)
         user_div = form.find(class_='kadi-rengi')
         if user_div:
             match = re.search(r'@\w+', user_div.text)
             if match:
                 username = match.group(0)
         
-        # Cách 2: Từ span chứa @
         if not username:
-            for span in form.find_all('span'):
-                match = re.search(r'@\w+', span.text)
+            for tag in form.find_all(True):
+                match = re.search(r'@\w+', tag.text)
                 if match:
                     username = match.group(0)
                     break
         
-        # Cách 3: Từ text của form
-        if not username:
-            all_text = form.get_text()
-            match = re.search(r'@\w+', all_text)
-            if match:
-                username = match.group(0)
-        
         if not username:
             continue
         
-        # === TÌM NỘI DUNG COMMENT ===
-        # Cách 1: Từ span không chứa @ và không phải số
-        for span in form.find_all('span'):
+        # Tìm nội dung comment
+        comment_text = ""
+        spans = form.find_all('span')
+        valid_texts = []
+        for span in spans:
             txt = span.text.strip()
-            if txt and not txt.startswith('@') and not txt.isdigit():
-                if len(txt) > 2:
-                    comment_text = txt
-                    break
+            if txt:
+                if username and username in txt:
+                    continue
+                if txt.startswith('@'):
+                    continue
+                if txt.isdigit():
+                    continue
+                if any(x in txt.lower() for x in ['minute', 'second', 'hour', 'day', 'week', 'month', 'ago']):
+                    continue
+                if 'select limit' in txt.lower():
+                    continue
+                valid_texts.append(txt)
         
-        # Cách 2: Từ div comment
-        if not comment_text:
-            comment_div = form.find('div', class_=re.compile(r'comment|text|content|message'))
-            if comment_div:
-                comment_text = comment_div.text.strip()
-        
-        # Cách 3: Từ text của form
-        if not comment_text:
-            all_text = form.get_text(separator=' ')
-            parts = all_text.split()
-            for part in parts:
-                if username in part:
-                    continue
-                if part.isdigit():
-                    continue
-                if any(x in part.lower() for x in ['minute', 'second', 'hour', 'day', 'week', 'month', 'ago']):
-                    continue
-                if 'limit' in part.lower():
-                    continue
-                if len(part) > 3:
-                    comment_text = part
-                    break
-        
-        if not comment_text:
+        if valid_texts:
+            comment_text = valid_texts[0]
+        else:
             comment_text = "Comment"
         
-        # === TÌM SỐ TIM ===
+        # Tìm số heart hiện tại
         heart_count = "0"
-        
-        # Cách 1: Tìm class chứa heart/green
-        heart_spans = form.find_all('span', class_=re.compile(r'heart|green|text-green|text-success|count'))
-        for span in heart_spans:
-            txt = span.text.strip()
-            if txt.isdigit():
-                heart_count = txt
-                break
-        
-        # Cách 2: Tìm icon heart
-        if heart_count == "0":
-            for span in form.find_all('span'):
-                if '❤️' in span.text or '♥' in span.text:
-                    txt = re.sub(r'[^0-9]', '', span.text)
-                    if txt:
-                        heart_count = txt
-                        break
-        
-        # Cách 3: Tìm số gần heart
-        if heart_count == "0":
-            form_html = str(form)
-            matches = re.findall(r'❤️?\s*(\d+)|(\d+)\s*❤️', form_html)
-            if matches:
-                for m in matches:
-                    num = m[0] or m[1]
-                    if num:
-                        heart_count = num
-                        break
-        
-        # Cách 4: Tìm bất kỳ số nào trong span
-        if heart_count == "0":
-            for span in form.find_all('span'):
+        green_span = form.find('span', class_='text-green') or form.find(class_=re.compile(r'text-green'))
+        if green_span:
+            heart_count = green_span.text.strip()
+        else:
+            for span in spans:
                 txt = span.text.strip()
-                if txt.isdigit() and int(txt) > 0:
+                if txt.isdigit():
                     heart_count = txt
                     break
         
-        # === LẤY SELECT OPTIONS ===
+        # Lấy select options
         select = form.find('select')
         amounts = []
         if select:
@@ -556,10 +498,7 @@ def _parse_comments(html: str) -> list[dict[str, Any]]:
                 if val.isdigit():
                     amounts.append(int(val))
         
-        if not amounts:
-            amounts = [25, 50, 100, 200, 500, 1000]
-        
-        # === LẤY HIDDEN INPUTS ===
+        # Lấy hidden inputs
         hidden_inputs = {}
         for inp in form.find_all('input', type='hidden'):
             name = inp.get('name')
@@ -567,13 +506,14 @@ def _parse_comments(html: str) -> list[dict[str, Any]]:
             if name:
                 hidden_inputs[name] = val
         
+        # Lấy action
         action = form.get('action', '')
         
         comment_items.append({
             'username': username,
-            'text': comment_text[:200],
+            'text': comment_text,
             'hearts': heart_count,
-            'amounts': amounts,
+            'amounts': amounts or [25, 50, 100, 200, 500, 1000],
             'hidden_inputs': hidden_inputs,
             'action': action,
             'form': form
@@ -660,7 +600,7 @@ def _perform_action(st: dict[str, Any], service: str, url: str, comment_data: Op
     
     soup = BeautifulSoup(decoded_response, 'html.parser')
     
-    # ===== COMMENTS HEARTS =====
+    # ===== KIỂM TRA NẾU LÀ COMMENTS HEARTS =====
     if service == "Comments Hearts":
         # Kiểm tra nút "Fetch Comments"
         comments_fetch_btn = None
@@ -691,10 +631,12 @@ def _perform_action(st: dict[str, Any], service: str, url: str, comment_data: Op
         
         # Parse comments
         comment_items = _parse_comments(decoded_response)
+        
+        # Lưu comments vào session
         st["comments_cache"] = comment_items
         
-        # Nếu có comment_data -> buff
         if comment_data:
+            # Nếu có comment_data từ client, buff vào comment đó
             target_form = None
             for item in comment_items:
                 if item['username'] == comment_data.get('username') and item['text'] == comment_data.get('text'):
@@ -716,7 +658,7 @@ def _perform_action(st: dict[str, Any], service: str, url: str, comment_data: Op
                 if name:
                     submit_data[name] = val
             
-            # Lấy select options và chọn MAX
+            # Lấy select options và chọn max
             selects = target_form.find_all('select')
             for sel in selects:
                 name = sel.get('name')
@@ -740,6 +682,7 @@ def _perform_action(st: dict[str, Any], service: str, url: str, comment_data: Op
                 if max_val is not None:
                     submit_data[name] = max_val
             
+            # Thêm video URL nếu cần
             if input_name not in submit_data:
                 submit_data[input_name] = url
             
@@ -753,20 +696,6 @@ def _perform_action(st: dict[str, Any], service: str, url: str, comment_data: Op
             
             amount, kind, msg = _parse_result(decoded_boost)
             
-            # Fallback: nếu amount = None, thử tìm số trong msg
-            if amount is None and msg:
-                match = re.search(r'(\d+)', msg)
-                if match:
-                    amount = int(match.group(1))
-                    kind = "hearts"
-            
-            # Nếu vẫn không có amount, mặc định
-            if amount is None:
-                amount = 100
-                kind = "hearts"
-                if not msg:
-                    msg = "Đã gửi hearts"
-            
             if not msg:
                 soup_clean = BeautifulSoup(decoded_boost, 'html.parser')
                 msg = soup_clean.get_text(separator=' ').strip()[:200]
@@ -775,28 +704,19 @@ def _perform_action(st: dict[str, Any], service: str, url: str, comment_data: Op
             if timer and timer > 0:
                 st["cooldown_until"] = time.time() + timer
             
+            # Xóa cache comments sau khi buff
             st["comments_cache"] = []
-            
-            # Lấy lại comments để cập nhật số tim
-            refresh_comments = []
-            try:
-                time.sleep(2)
-                refresh_resp = session.post(action_url, headers=ajax_headers, data=search_data, timeout=45)
-                refresh_html = _decode_response(refresh_resp.text)
-                refresh_comments = _parse_comments(refresh_html)
-            except:
-                pass
             
             return {
                 "success": True,
-                "amount": amount,
+                "amount": amount or 100,
                 "kind": kind or "hearts",
-                "message": msg,
+                "message": msg or "Thành công",
                 "cooldown": timer,
-                "comments": refresh_comments if refresh_comments else comment_items
+                "comments": comment_items  # Trả về danh sách comment để client hiển thị
             }
         else:
-            # Chỉ fetch comments
+            # Chỉ fetch comments, chưa buff
             return {
                 "success": True,
                 "comments": [
@@ -811,7 +731,7 @@ def _perform_action(st: dict[str, Any], service: str, url: str, comment_data: Op
                 "count": len(comment_items)
             }
     
-    # ===== SERVICE THÔNG THƯỜNG =====
+    # ===== XỬ LÝ SERVICE THÔNG THƯỜNG =====
     form = soup.find('form')
     submit_btn = soup.find('button', class_=re.compile(r'wbutton|btn|submit'))
     
@@ -962,7 +882,7 @@ input,select{background:#0f1220;color:var(--fg);border:1px solid var(--bd);paddi
 .comment-item.selected{background:#1a2a4a;border-color:var(--pri)}
 .comment-item .username{color:var(--ok);font-weight:bold}
 .comment-item .text{color:var(--fg)}
-.comment-item .hearts{color:#ffd700;float:right}
+.comment-item .hearts{color:var(--gold);float:right}
 </style>
 </head>
 <body>
@@ -1039,6 +959,7 @@ function renderSvc(list){
   });
   document.getElementById('svcCard').classList.remove('hidden');
   document.getElementById('statCard').classList.remove('hidden');
+  // Hiện nút Fetch Comments nếu service Comments Hearts có sẵn
   if(hasComments) {
     document.getElementById('btnFetchComments').classList.remove('hidden');
   } else {
@@ -1417,8 +1338,7 @@ def comments_run(req: CommentsRunReq):
                 "cooldown": result.get("cooldown"),
                 "total_sent": st.get("total_sent", 0),
                 "service": req.service,
-                "username": req.username,
-                "comments": result.get("comments", [])
+                "username": req.username
             }
         else:
             return {
